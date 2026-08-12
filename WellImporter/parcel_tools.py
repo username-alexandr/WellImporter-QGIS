@@ -23,7 +23,7 @@ class ParcelManager:
     def __init__(self):
         self.project = QgsProject.instance()
 
-    def detect_source(self, excluded_layer_ids=None):
+    def detect_source(self, excluded_layer_ids=None, require_cadastral=False):
         """Автоматически выбирает наиболее вероятный полигональный слой участков.
 
         Решение принимается по имени слоя, физическим именам полей и псевдонимам.
@@ -50,6 +50,8 @@ class ParcelManager:
                 layer, self._label_field_score
             )
             score = layer_score + cadastral_score + label_score
+            if require_cadastral and (not cadastral_field or cadastral_score <= 0):
+                continue
             if score <= 0:
                 continue
             candidates.append({
@@ -136,6 +138,47 @@ class ParcelManager:
             "cadastral_field": cadastral_field or "",
             "score": source.get("score", 0),
         }
+
+    def assign_auto(self, point_layer, excluded_layer_ids=None, selected_only=False):
+        """Автоматически определяет участок и кадастровый номер каждой точки."""
+        source = self.detect_source(excluded_layer_ids, require_cadastral=True)
+        parcel_layer = source["layer"]
+        cadastral_field = source.get("cadastral_field")
+        label_field = source.get("label_field")
+        if not cadastral_field:
+            raise Exception(
+                "Не удалось автоматически определить поле кадастрового номера в слое участков."
+            )
+
+        result = self.assign(
+            point_layer, parcel_layer, cadastral_field,
+            parcel_label_field=label_field, selected_only=selected_only,
+        )
+        features = (
+            point_layer.selectedFeatures()
+            if selected_only and point_layer.selectedFeatureCount()
+            else list(point_layer.getFeatures())
+        )
+        cad_idx = point_layer.fields().indexFromName(self.CADASTRAL_FIELD)
+        cadastral_found = 0
+        cadastral_empty = 0
+        for feature in features:
+            value = str(feature[cad_idx] or "").strip() if cad_idx >= 0 else ""
+            if value:
+                cadastral_found += 1
+            else:
+                cadastral_empty += 1
+
+        result.update({
+            "source_layer": parcel_layer.name(),
+            "source_layer_id": parcel_layer.id(),
+            "label_field": label_field or "",
+            "cadastral_field": cadastral_field,
+            "cadastral_found": cadastral_found,
+            "cadastral_empty": cadastral_empty,
+            "score": source.get("score", 0),
+        })
+        return result
 
     def assign(self, point_layer, parcel_layer, cadastral_source_field,
                parcel_label_field=None, selected_only=False):

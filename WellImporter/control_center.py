@@ -263,14 +263,15 @@ class ControlCenterDialog(QtWidgets.QDialog):
         self.chkSelectedOnly = QtWidgets.QCheckBox("Обрабатывать только выделенные скважины")
         v.addWidget(self.chkSelectedOnly)
 
-        btn = QtWidgets.QPushButton("Автоматически определить земельные участки")
+        btn = QtWidgets.QPushButton("Автоматически определить участки и кадастровые номера")
         btn.setMinimumHeight(40)
         btn.clicked.connect(self.assign_parcels)
         v.addWidget(btn)
 
         note = QtWidgets.QLabel(
-            "Результат записывается в поле WI_PARCEL с псевдонимом «Земельный участок». "
-            "Если точка попадает в несколько полигонов, выбирается участок с ближайшим центроидом."
+            "Результат записывается в поля WI_PARCEL и WI_CAD с псевдонимами «Земельный участок» "
+            "и «Кадастровый номер». Если точка попадает в несколько полигонов, выбирается участок "
+            "с ближайшим центроидом."
         )
         note.setWordWrap(True)
         v.addWidget(note)
@@ -715,7 +716,7 @@ class ControlCenterDialog(QtWidgets.QDialog):
         """Определяет участок каждой скважины полностью автоматически."""
         try:
             point_id, polygon_id = self._target_ids()
-            result = self.controller.assign_parcel_names_auto(
+            result = self.controller.assign_parcels_auto(
                 point_id, polygon_id, selected_only=self.chkSelectedOnly.isChecked()
             )
             self.lblParcelLayerAuto.setText(result.get("source_layer", "—") or "—")
@@ -723,11 +724,14 @@ class ControlCenterDialog(QtWidgets.QDialog):
             self.lblCadastralFieldAuto.setText(result.get("cadastral_field", "—") or "—")
             self.txtParcels.setPlainText(
                 f"Источник определён автоматически: {result.get('source_layer', '—')}\n"
-                f"Поле участка: {result.get('label_field', '—') or '—'}\n\n"
+                f"Поле участка: {result.get('label_field', '—') or '—'}\n"
+                f"Поле кадастрового номера: {result.get('cadastral_field', '—') or '—'}\n\n"
                 f"Обработано скважин: {result.get('processed', 0)}\n"
                 f"Участок найден: {result.get('found', 0)}\n"
                 f"Не найден: {result.get('not_found', 0)}\n"
-                f"Несколько пересечений: {result.get('multiple', 0)}"
+                f"Несколько пересечений: {result.get('multiple', 0)}\n"
+                f"Кадастровых номеров получено: {result.get('cadastral_found', 0)}\n"
+                f"Пустых кадастровых номеров: {result.get('cadastral_empty', 0)}"
             )
             self.main.refresh_dashboard()
         except Exception as exc:

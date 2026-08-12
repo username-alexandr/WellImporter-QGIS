@@ -522,6 +522,21 @@ class ImportController:
         )
         return result
 
+    def assign_parcels_auto(self, point_layer_id, polygon_layer_id=None, selected_only=False):
+        """Заполняет участок и кадастровый номер полностью автоматически."""
+        point_layer = self.layer_by_id(point_layer_id)
+        excluded = [polygon_layer_id] if polygon_layer_id else []
+        result = self.parcels.assign_auto(
+            point_layer, excluded_layer_ids=excluded, selected_only=selected_only
+        )
+        self._refresh_layer(point_layer)
+        self.iface.mapCanvas().refresh()
+        self.logger.write(
+            f"Автоматические участки/кадастр: слой «{result.get('source_layer', '')}», "
+            f"участков {result.get('found', 0)}, кадастровых номеров {result.get('cadastral_found', 0)}"
+        )
+        return result
+
     def assign_parcels(self, point_layer_id, parcel_layer_id, cadastral_field,
                        parcel_label_field=None, selected_only=False):
         point_layer = self.layer_by_id(point_layer_id)
