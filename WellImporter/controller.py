@@ -32,6 +32,7 @@ from .field_sync import FieldSyncManager
 from .web_map_export import WebMapExporter
 from .management_web_map import ManagementWebMapExporter
 from .field_package import FieldPackageBuilder
+from .full_workflow import FullWorkflowManager
 from .parcel_tools import ParcelManager
 from .well_search import WellSearchManager
 from .well_card import WellCardManager
@@ -102,6 +103,7 @@ class ImportController:
             self.archive_export, self.web_map, self.field_sync,
             self.field_preflight, self.basemaps,
         )
+        self.full_workflow = FullWorkflowManager(self.project, self.field_preflight)
         self.parcels = ParcelManager()
         self.well_search = WellSearchManager()
         self.well_cards = WellCardManager()
@@ -349,6 +351,14 @@ class ImportController:
             f"файл {result.get('path', '')}"
         )
         return result
+
+    def write_full_workflow_report(self, output_dir, summary):
+        """Записывает JSON-сводку и CSV оставшихся ошибок полного цикла."""
+        return self.full_workflow.write_report(output_dir, summary)
+
+    def create_full_workflow_backup(self, output_dir, report_files=None):
+        """Создаёт ZIP резервной копии QGIS-проекта и локальных ресурсов."""
+        return self.full_workflow.create_backup(output_dir, report_files)
 
     def compare_field_return(self, point_layer_id, polygon_layer_id, package_path):
         """Сравнивает офисную и выездную версии и возвращает только полевые изменения."""

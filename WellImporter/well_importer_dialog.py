@@ -13,6 +13,7 @@ from .duplicate_checker import DuplicateChecker
 from .field_export_wizard import FieldExportWizard
 from .field_sync import FieldSyncDialog
 from .basemap_dialog import BasemapCatalogDialog
+from .full_workflow_wizard import FullWorkflowWizard
 from .history_dialog import HistoryDialog
 from .importer import ClipboardImporter, ExcelFileImporter
 from .preview_dialog import PreviewDialog
@@ -447,6 +448,180 @@ class WellImporterDialog(QtWidgets.QDialog):
             self.set_status("Выездной комплект создан.")
             QtWidgets.QMessageBox.information(self, "Экспорт для выезда", message)
         except Exception as exc:
+            self._show_error(exc)
+
+    def run_full_workflow(self):
+        """Выполняет последовательность от импорта до отчёта и резервной копии."""
+        progress = None
+        try:
+            point_id, polygon_id = self._target_ids()
+            point_layer = self.controller.layer_by_id(point_id)
+            polygon_layer = self.controller.layer_by_id(polygon_id)
+
+            # Автоисправление может завершать собственные edit-сессии. Поэтому
+            # полный цикл не запускается поверх чужих несохранённых правок.
+            if point_layer.isEditable() or polygon_layer.isEditable():
+                raise Exception(
+                    "Перед запуском полного рабочего цикла сохраните или отмените текущие "
+                    "изменения в слоях скважин и площадных кругов."
+                )
+
+            project = QgsProject.instance()
+            if not project.fileName():
+                project_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                    self, "Сохранить QGIS-проект перед полным циклом",
+                    str(Path(self._default_output_dir()) / "WellImporter_Project.qgz"),
+                    "QGIS project (*.qgz)"
+                )
+                if not project_path:
+                    return
+                if not project_path.lower().endswith(".qgz"):
+                    project_path += ".qgz"
+                if not project.write(project_path):
+                    raise Exception("Не удалось сохранить QGIS-проект перед началом рабочего цикла.")
+
+            # Проверяем автоматический источник участка/кадастра до первой
+            # мутации, чтобы не оставлять частично выполненный цикл.
+            self.controller.detect_parcel_source(polygon_id, require_cadastral=True)
+
+            wizard = FullWorkflowWizard(self, self)
+            if wizard.exec_() != QtWidgets.QDialog.Accepted:
+                self.set_status("Полный рабочий цикл отменён.")
+                return
+
+            records = wizard.records
+            checks = wizard.checks
+            duplicate_checks = wizard.duplicate_checks
+            source = wizard.source_title
+            self.save_settings()
+
+            progress = QtWidgets.QProgressDialog("Подготовка...", "", 0, 10, self)
+            progress.setWindowTitle("Полный рабочий цикл — Well Importer")
+            progress.setCancelButton(None)
+            progress.setWindowModality(QtCore.Qt.WindowModal)
+            progress.setMinimumDuration(0)
+
+            def stage(value, label):
+                progress.setValue(value)
+                progress.setLabelText(label)
+                self.set_status(label)
+                QtWidgets.QApplication.processEvents()
+
+            stage(1, "1/10 — Предпросмотр и поиск дублей завершены")
+            suspicious = self.coordinate_checker.count_warnings(checks)
+            intelligent_duplicates = self.duplicate_checker.count_flagged(duplicate_checks)
+            coord_by_row = {item.row: item for item in checks}
+            duplicate_by_row = {item.row: item for item in duplicate_checks}
+            row_severities = []
+            for row in range(1, len(records) + 1):
+                coord = coord_by_row.get(row)
+                duplicate = duplicate_by_row.get(row)
+                row_severities.append(Severity.max(
+                    coord.severity if coord else Severity.INFO,
+                    duplicate.severity if duplicate and duplicate.messages else Severity.INFO,
+                ))
+            preview_counts = Severity.counts(row_severities)
+
+            stage(2, "2/10 — Импорт и создание точек/кругов")
+            import_result = self.controller.execute_records(
+                records, point_id, polygon_id,
+                self.ui.spinYear.value(), self.ui.spinArea.value(),
+                self.ui.chkSkipDuplicates.isChecked(),
+                source=f"Полный цикл: {source}",
+                suspicious_count=suspicious,
+                intelligent_duplicate_count=intelligent_duplicates,
+                preview_severity_counts=preview_counts,
+            )
+
+            stage(3, "3/10 — Контроль качества и полный аудит")
+            audit_before = self.controller.full_project_audit(
+                point_id, polygon_id, self.ui.spinArea.value()
+            )
+
+            stage(4, "4/10 — Земельные участки и кадастровые номера")
+            parcels = self.controller.assign_parcels_auto(
+                point_id, polygon_id, selected_only=False
+            )
+
+            stage(5, "5/10 — Автоматическое исправление")
+            repair_plan = {
+                "repair_points": True,
+                "create_missing_circles": True,
+                "repair_circles": True,
+                "repair_area": True,
+                "repair_center": True,
+                "sync_circle_attributes": True,
+            }
+            repair = self.controller.repair_project(
+                point_id, polygon_id, self.ui.spinYear.value(), self.ui.spinArea.value(),
+                None, None, repair_plan
+            )
+
+            stage(6, "6/10 — Повторный контроль после исправления")
+            audit_after = self.controller.full_project_audit(
+                point_id, polygon_id, self.ui.spinArea.value()
+            )
+
+            stage(7, "7/10 — Сохранение QGIS-проекта")
+            if not project.write():
+                raise Exception("Не удалось сохранить QGIS-проект после полного рабочего цикла.")
+
+            output_dir = str(Path(project.fileName()).parent)
+            summary = {
+                "source": source,
+                "import": import_result,
+                "preview": {
+                    "rows": len(records),
+                    "coordinate_warnings": suspicious,
+                    "possible_duplicates": intelligent_duplicates,
+                    "severity_counts": preview_counts,
+                },
+                "audit_before": audit_before,
+                "parcels": parcels,
+                "repair": repair,
+                "audit_after": audit_after,
+                "project": project.fileName(),
+            }
+
+            stage(8, "8/10 — Формирование итогового отчёта")
+            reports = self.controller.write_full_workflow_report(output_dir, summary)
+            summary["reports"] = reports
+
+            stage(9, "9/10 — Создание резервной копии")
+            backup = self.controller.create_full_workflow_backup(
+                output_dir, list(reports.values())
+            )
+            summary["backup"] = backup
+
+            stage(10, "10/10 — Рабочий цикл завершён")
+            progress.close()
+            progress = None
+            self.refresh_dashboard()
+            after_counts = audit_after.get("severity_counts", {})
+            message = (
+                "Полный рабочий цикл завершён.\n\n"
+                f"Строк обработано: {len(records)}\n"
+                f"Добавлено точек: {import_result.added_points}\n"
+                f"Добавлено кругов: {import_result.added_circles}\n"
+                f"Точных дублей пропущено: {import_result.skipped_duplicates}\n"
+                f"Участков определено: {parcels.get('found', 0)}\n"
+                f"Кадастровых номеров: {parcels.get('cadastral_found', 0)}\n"
+                f"Проблем до исправления: {audit_before.get('total', 0)}\n"
+                f"Проблем после исправления: {audit_after.get('total', 0)}\n"
+                f"Критических после: {after_counts.get(Severity.CRITICAL, 0)}\n\n"
+                f"JSON-отчёт: {reports.get('json', '')}\n"
+                f"CSV ошибок: {reports.get('csv', '')}\n"
+                f"Резервная копия: {backup.get('path', '')}"
+            )
+            self.append_log(message)
+            self.set_status("Полный рабочий цикл успешно завершён.")
+            QtWidgets.QMessageBox.information(self, "Полный рабочий цикл", message)
+        except Exception as exc:
+            if progress is not None:
+                try:
+                    progress.close()
+                except Exception:
+                    pass
             self._show_error(exc)
 
     def export_management_web_map(self):

@@ -27,6 +27,7 @@ class WellImporter:
         icon = QIcon(os.path.join(self.plugin_dir, "icon.png"))
         self.action_import = QAction(icon, "Well Importer — главное окно", self.iface.mainWindow())
         self.action_center = QAction(icon, "Центр управления", self.iface.mainWindow())
+        self.action_full_workflow = QAction(icon, "Полный рабочий цикл", self.iface.mainWindow())
         self.action_history = QAction(icon, "История импортов", self.iface.mainWindow())
         self.action_undo = QAction(icon, "Отменить последний импорт", self.iface.mainWindow())
         self.action_help = QAction(icon, "Инструкция по импорту", self.iface.mainWindow())
@@ -35,6 +36,7 @@ class WellImporter:
 
         self.action_import.triggered.connect(self.run)
         self.action_center.triggered.connect(self.open_control_center)
+        self.action_full_workflow.triggered.connect(self.run_full_workflow)
         self.action_history.triggered.connect(self.show_history)
         self.action_undo.triggered.connect(self.undo_last_import)
         self.action_help.triggered.connect(self.show_help)
@@ -42,7 +44,7 @@ class WellImporter:
         self.action_basemap_next.triggered.connect(self.switch_next_basemap)
 
         self.actions = [
-            self.action_import, self.action_center, self.action_history,
+            self.action_import, self.action_full_workflow, self.action_center, self.action_history,
             self.action_undo, self.action_basemaps, self.action_basemap_next, self.action_help,
         ]
         for action in self.actions:
@@ -64,6 +66,13 @@ class WellImporter:
         self.dialog.show()
         self.dialog.raise_()
         self.dialog.activateWindow()
+
+    def run_full_workflow(self):
+        self.dialog = WellImporterDialog(self.iface)
+        self.dialog.show()
+        self.dialog.raise_()
+        self.dialog.activateWindow()
+        self.dialog.run_full_workflow()
 
     def open_control_center(self):
         self.dialog = WellImporterDialog(self.iface)
