@@ -449,6 +449,38 @@ class WellImporterDialog(QtWidgets.QDialog):
         except Exception as exc:
             self._show_error(exc)
 
+    def export_management_web_map(self):
+        """Экспортирует один автономный HTML-файл, который открывается без QGIS."""
+        try:
+            point_id, polygon_id = self._target_ids()
+            default = str(
+                Path(self._default_output_dir()) /
+                f"WellImporter_Map_{datetime.now().strftime('%Y%m%d_%H%M')}.html"
+            )
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self, "Сохранить HTML-карту для руководства", default,
+                "HTML (*.html)"
+            )
+            if not path:
+                return
+            self.set_status("Подготовка автономной HTML-карты...")
+            result = self.controller.export_management_web_map(
+                point_id, polygon_id, path
+            )
+            message = (
+                f"HTML-карта создана.\n\n"
+                f"Файл: {result.get('path', '')}\n"
+                f"Скважин: {result.get('points', 0)}\n"
+                f"Площадных кругов: {result.get('circles', 0)}\n\n"
+                "В карте доступны поиск по номеру, фильтры по году и участку, "
+                "всплывающие карточки и печать выбранной области. QGIS для просмотра не требуется."
+            )
+            self.append_log(message)
+            self.set_status("HTML-карта готова.")
+            QtWidgets.QMessageBox.information(self, "HTML-карта", message)
+        except Exception as exc:
+            self._show_error(exc)
+
     def import_field_results(self):
         """Сравнивает офисную/выездную версии и применяет только подтверждённые изменения."""
         try:

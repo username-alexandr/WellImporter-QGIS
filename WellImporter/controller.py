@@ -30,6 +30,7 @@ from .basemap_catalog import BasemapCatalog
 from .field_preflight import FieldPreflightChecker
 from .field_sync import FieldSyncManager
 from .web_map_export import WebMapExporter
+from .management_web_map import ManagementWebMapExporter
 from .field_package import FieldPackageBuilder
 from .parcel_tools import ParcelManager
 from .well_search import WellSearchManager
@@ -96,6 +97,7 @@ class ImportController:
         self.field_preflight = FieldPreflightChecker(self.project)
         self.field_sync = FieldSyncManager(self.project)
         self.web_map = WebMapExporter(self.project)
+        self.management_web_map = ManagementWebMapExporter(self.project)
         self.field_package = FieldPackageBuilder(
             self.archive_export, self.web_map, self.field_sync,
             self.field_preflight, self.basemaps,
@@ -324,6 +326,27 @@ class ImportController:
         self.logger.write(
             f"Выездной ZIP: точек {result['points']}, кругов {result['circles']}, "
             f"файл: {result['zip_path']}"
+        )
+        return result
+
+    def export_management_web_map(self, point_layer_id, polygon_layer_id, output_path):
+        """Создаёт автономную HTML-карту для передачи руководству."""
+        point_layer = self.layer_by_id(point_layer_id)
+        polygon_layer = self.layer_by_id(polygon_layer_id)
+        self._validate_layers(point_layer, polygon_layer, require_editable=False)
+
+        # Перед HTML-экспортом сведения об участке и кадастровом номере
+        # актуализируются автоматически, чтобы фильтры/карточки были полными.
+        cadastral = self.assign_parcels_auto(
+            point_layer_id, polygon_layer_id, selected_only=False
+        )
+        result = self.management_web_map.export(
+            point_layer, polygon_layer, output_path, selected_only=False
+        )
+        result["cadastral"] = cadastral
+        self.logger.write(
+            f"HTML-карта руководству: скважин {result.get('points', 0)}, "
+            f"файл {result.get('path', '')}"
         )
         return result
 

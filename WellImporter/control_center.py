@@ -407,10 +407,13 @@ class ControlCenterDialog(QtWidgets.QDialog):
         v.addWidget(self.lblReportInfo)
         btnCsv = QtWidgets.QPushButton("Экспорт полного отчёта контроля в CSV")
         btnPairCsv = QtWidgets.QPushButton("Экспорт отчёта «1 точка = 1 круг» в CSV")
+        btnHtml = QtWidgets.QPushButton("HTML-карта для руководства (без QGIS)")
         btnCsv.clicked.connect(self.export_attribute_report)
         btnPairCsv.clicked.connect(self.export_pair_integrity_report)
+        btnHtml.clicked.connect(self.main.export_management_web_map)
         v.addWidget(btnCsv)
         v.addWidget(btnPairCsv)
+        v.addWidget(btnHtml)
         v.addStretch(1)
         self._add_scroll_tab(tab, "Отчётность")
 
