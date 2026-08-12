@@ -21,6 +21,7 @@ from .attribute_checker import AttributeChecker
 from .circle_repair import CircleRepairManager
 from .point_repair import PointRepairManager
 from .project_audit import ProjectAuditManager
+from .pair_integrity import PairIntegrityChecker
 from .parcel_tools import ParcelManager
 from .well_search import WellSearchManager
 from .well_card import WellCardManager
@@ -77,6 +78,7 @@ class ImportController:
         self.circle_repair = CircleRepairManager()
         self.point_repair = PointRepairManager()
         self.project_audit = ProjectAuditManager()
+        self.pair_integrity = PairIntegrityChecker()
         self.parcels = ParcelManager()
         self.well_search = WellSearchManager()
         self.well_cards = WellCardManager()
@@ -308,8 +310,9 @@ class ImportController:
         quality = self.quality.validate_all(
             point_layer, polygon_layer, expected_area_ha
         )
+        pair_report = self.pair_integrity.check(point_layer, polygon_layer)
         report = self.project_audit.build(
-            point_layer, polygon_layer, attributes, quality
+            point_layer, polygon_layer, attributes, quality, pair_report
         )
         self.logger.write(
             f"Полный аудит проекта: проблем {report.get('total', 0)}, "

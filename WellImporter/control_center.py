@@ -332,8 +332,11 @@ class ControlCenterDialog(QtWidgets.QDialog):
         self.lblReportInfo.setWordWrap(True)
         v.addWidget(self.lblReportInfo)
         btnCsv = QtWidgets.QPushButton("Экспорт полного отчёта контроля в CSV")
+        btnPairCsv = QtWidgets.QPushButton("Экспорт отчёта «1 точка = 1 круг» в CSV")
         btnCsv.clicked.connect(self.export_attribute_report)
+        btnPairCsv.clicked.connect(self.export_pair_integrity_report)
         v.addWidget(btnCsv)
+        v.addWidget(btnPairCsv)
         v.addStretch(1)
         self._add_scroll_tab(tab, "Отчётность")
 
@@ -397,6 +400,7 @@ class ControlCenterDialog(QtWidgets.QDialog):
                 f"Критических проблем: {status.get('critical', 0)}\n"
                 f"Проблем обязательных атрибутов: {status['attributes'].get('total', 0)}\n"
                 f"Проверено пар точка/круг: {status['quality'].get('total', 0)}\n"
+                f"Нарушений правила 1 точка = 1 круг: {status.get('audit', {}).get('pair_integrity', {}).get('violations', 0)}\n"
                 f"Кругов без замечаний: {status['quality'].get('ok', 0)}"
             )
         except Exception as exc:
@@ -420,6 +424,7 @@ class ControlCenterDialog(QtWidgets.QDialog):
             self.last_audit_report = report
             counts = report.get("severity_counts", {})
             checked = report.get("checked", {})
+            pair_report = report.get("pair_integrity", {})
 
             lines = [
                 "ПОЛНЫЙ АУДИТ ПРОЕКТА",
@@ -428,6 +433,15 @@ class ControlCenterDialog(QtWidgets.QDialog):
                 f"Проверено площадных кругов: {checked.get('circles', 0)}",
                 f"Проверено пар точка/круг: {checked.get('pairs', 0)}",
                 f"Кругов без замечаний: {checked.get('circles_ok', 0)}",
+                "",
+                "ОТЧЁТ «1 ТОЧКА = 1 КРУГ»",
+                f"Проверено номеров: {pair_report.get('numbers_checked', 0)}",
+                f"Корректных пар: {pair_report.get('ok', 0)}",
+                f"Нарушений 1:1: {pair_report.get('violations', 0)}",
+                f"Точек без круга: {pair_report.get('missing_circles', 0)}",
+                f"Кругов без точки: {pair_report.get('missing_points', 0)}",
+                f"Дублирующихся точек: {pair_report.get('duplicate_points', 0)}",
+                f"Дублирующихся кругов: {pair_report.get('duplicate_circles', 0)}",
                 "",
                 f"Всего проблем: {report.get('total', 0)}",
                 f"Критических: {counts.get(Severity.CRITICAL, 0)}",
@@ -780,6 +794,44 @@ class ControlCenterDialog(QtWidgets.QDialog):
                 area_ha=self.main.ui.spinArea.value(), image=image,
             )
             QtWidgets.QMessageBox.information(self, "Well Importer", f"Файл создан:\n{result}")
+        except Exception as exc:
+            self._error(exc)
+
+    def export_pair_integrity_report(self):
+        """Экспортирует отдельный отчёт нарушений правила «1 точка = 1 круг»."""
+        try:
+            point_id, polygon_id = self._target_ids()
+            point_fields, polygon_fields = self._required_fields()
+            audit_report = self.controller.full_project_audit(
+                point_id, polygon_id, self.main.ui.spinArea.value(),
+                point_fields, polygon_fields,
+            )
+            pair_report = audit_report.get("pair_integrity", {})
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self, "Сохранить отчёт 1 точка = 1 круг",
+                str(Path(self.main._default_output_dir()) / "WellImporter_OnePoint_OneCircle.csv"),
+                "CSV (*.csv)",
+            )
+            if not path:
+                return
+            with open(path, "w", encoding="utf-8-sig", newline="") as stream:
+                writer = csv.writer(stream, delimiter=";")
+                writer.writerow([
+                    "Номер скважины", "Количество точек", "Количество кругов",
+                    "Серьёзность", "Нарушение",
+                ])
+                for item in pair_report.get("items", []):
+                    writer.writerow([
+                        item.get("number", ""),
+                        item.get("point_count", 0),
+                        item.get("circle_count", 0),
+                        Severity.label(item.get("severity")),
+                        item.get("message", ""),
+                    ])
+            QtWidgets.QMessageBox.information(
+                self, "Отчёт 1 точка = 1 круг",
+                f"Отчёт сохранён:\n{path}\n\nНарушений: {pair_report.get('violations', 0)}"
+            )
         except Exception as exc:
             self._error(exc)
 

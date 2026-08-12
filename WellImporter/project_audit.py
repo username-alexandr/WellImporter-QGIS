@@ -9,12 +9,20 @@ class ProjectAuditManager:
 
     На этом уровне аудит ничего не исправляет и не изменяет в слоях. Его задача —
     собрать результаты независимых проверок в общий список проблем с единой
-    шкалой серьёзности. Такой формат затем используется интерфейсом, экспортом
-    отчёта и следующими этапами развития мастера исправления ошибок.
+    шкалой серьёзности. Такой формат используется интерфейсом, экспортом отчёта
+    и мастером исправления ошибок.
     """
 
-    def build(self, point_layer, polygon_layer, attribute_report, quality_report):
+    def build(
+        self,
+        point_layer,
+        polygon_layer,
+        attribute_report,
+        quality_report,
+        pair_report=None,
+    ):
         issues = []
+        pair_report = dict(pair_report or {})
 
         # Ошибки обязательных атрибутов уже содержат FID конкретного объекта.
         for issue in attribute_report.get("issues", []):
@@ -59,6 +67,20 @@ class ProjectAuditManager:
                 "message": message,
             })
 
+        # Отдельный отчёт правила «1 точка = 1 круг» сохраняется целиком и
+        # одновременно попадает в общий интерактивный список ошибок.
+        for item in pair_report.get("items", []):
+            issues.append({
+                "source": "pair_integrity",
+                "category": str(item.get("category", "1 точка = 1 круг") or "1 точка = 1 круг"),
+                "layer_id": str(item.get("layer_id", "") or ""),
+                "layer_name": str(item.get("layer_name", "") or ""),
+                "feature_id": int(item.get("feature_id", -1) or -1),
+                "number": str(item.get("number", "") or ""),
+                "severity": Severity.normalize(item.get("severity")),
+                "message": str(item.get("message", "") or ""),
+            })
+
         counts = Severity.counts(issue["severity"] for issue in issues)
         highest = Severity.max(*(issue["severity"] for issue in issues)) if issues else Severity.INFO
 
@@ -69,10 +91,11 @@ class ProjectAuditManager:
             "issues": issues,
             "attributes": attribute_report,
             "quality": quality_report,
+            "pair_integrity": pair_report,
             "checked": {
                 "points": int(point_layer.featureCount()),
                 "circles": int(polygon_layer.featureCount()),
-                "pairs": int(quality_report.get("total", 0)),
+                "pairs": int(pair_report.get("numbers_checked", quality_report.get("total", 0))),
                 "circles_ok": int(quality_report.get("ok", 0)),
             },
         }
