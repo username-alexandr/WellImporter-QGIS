@@ -4,14 +4,7 @@ from .severity import Severity
 
 
 class ProjectAuditManager:
-    """
-    Объединяет все текущие проверки проекта в один нормализованный отчёт.
-
-    На этом уровне аудит ничего не исправляет и не изменяет в слоях. Его задача —
-    собрать результаты независимых проверок в общий список проблем с единой
-    шкалой серьёзности. Такой формат используется интерфейсом, экспортом отчёта
-    и мастером исправления ошибок.
-    """
+    """Объединяет независимые проверки проекта в единый нормализованный отчёт."""
 
     def build(
         self,
@@ -21,12 +14,13 @@ class ProjectAuditManager:
         quality_report,
         pair_report=None,
         number_consistency_report=None,
+        number_format_report=None,
     ):
         issues = []
         pair_report = dict(pair_report or {})
         number_consistency_report = dict(number_consistency_report or {})
+        number_format_report = dict(number_format_report or {})
 
-        # Ошибки обязательных атрибутов уже содержат FID конкретного объекта.
         for issue in attribute_report.get("issues", []):
             layer_name = str(issue.get("layer_name", ""))
             layer_id = ""
@@ -34,7 +28,6 @@ class ProjectAuditManager:
                 layer_id = point_layer.id()
             elif layer_name == polygon_layer.name():
                 layer_id = polygon_layer.id()
-
             issues.append({
                 "source": "attributes",
                 "category": "Обязательные атрибуты",
@@ -46,12 +39,9 @@ class ProjectAuditManager:
                 "message": str(issue.get("message", "") or ""),
             })
 
-        # В итоговый список попадают только проблемные результаты проверки кругов.
-        # INFO/OK остаются в статистике quality_report, но не засоряют список ошибок.
         for item in quality_report.get("items", []):
             if item.get("area_ok") and item.get("center_ok"):
                 continue
-
             message = str(item.get("message", "") or "")
             category = (
                 "Соответствие точка ↔ круг"
@@ -69,8 +59,6 @@ class ProjectAuditManager:
                 "message": message,
             })
 
-        # Отдельный отчёт правила «1 точка = 1 круг» сохраняется целиком и
-        # одновременно попадает в общий интерактивный список ошибок.
         for item in pair_report.get("items", []):
             issues.append({
                 "source": "pair_integrity",
@@ -83,10 +71,7 @@ class ProjectAuditManager:
                 "message": str(item.get("message", "") or ""),
             })
 
-        # Несовпадение номера между геометрически связанной точкой и кругом
-        # всегда является критической ошибкой. Серьёзность принудительно
-        # устанавливается здесь ещё раз, чтобы правило нельзя было ослабить
-        # случайным изменением дочернего проверяющего модуля.
+        # Несовпадение заполненных номеров в геометрически связанной паре всегда CRITICAL.
         for item in number_consistency_report.get("items", []):
             issues.append({
                 "source": "pair_number_consistency",
@@ -102,6 +87,18 @@ class ProjectAuditManager:
                 "message": str(item.get("message", "") or ""),
             })
 
+        for item in number_format_report.get("items", []):
+            issues.append({
+                "source": "number_format",
+                "category": str(item.get("category", "Неверный формат номера") or "Неверный формат номера"),
+                "layer_id": str(item.get("layer_id", "") or ""),
+                "layer_name": str(item.get("layer_name", "") or ""),
+                "feature_id": int(item.get("feature_id", -1) or -1),
+                "number": str(item.get("number", "") or ""),
+                "severity": Severity.normalize(item.get("severity", Severity.ERROR)),
+                "message": str(item.get("message", "") or ""),
+            })
+
         counts = Severity.counts(issue["severity"] for issue in issues)
         highest = Severity.max(*(issue["severity"] for issue in issues)) if issues else Severity.INFO
 
@@ -114,6 +111,7 @@ class ProjectAuditManager:
             "quality": quality_report,
             "pair_integrity": pair_report,
             "number_consistency": number_consistency_report,
+            "number_format": number_format_report,
             "checked": {
                 "points": int(point_layer.featureCount()),
                 "circles": int(polygon_layer.featureCount()),

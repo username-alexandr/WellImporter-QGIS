@@ -23,6 +23,7 @@ from .point_repair import PointRepairManager
 from .project_audit import ProjectAuditManager
 from .pair_integrity import PairIntegrityChecker
 from .pair_number_checker import PairNumberConsistencyChecker
+from .well_number_validator import WellNumberFormatChecker
 from .parcel_tools import ParcelManager
 from .well_search import WellSearchManager
 from .well_card import WellCardManager
@@ -81,6 +82,7 @@ class ImportController:
         self.project_audit = ProjectAuditManager()
         self.pair_integrity = PairIntegrityChecker()
         self.pair_number_consistency = PairNumberConsistencyChecker()
+        self.number_format = WellNumberFormatChecker()
         self.parcels = ParcelManager()
         self.well_search = WellSearchManager()
         self.well_cards = WellCardManager()
@@ -316,9 +318,10 @@ class ImportController:
         number_consistency = self.pair_number_consistency.check(
             point_layer, polygon_layer
         )
+        number_format = self.number_format.check(point_layer, polygon_layer)
         report = self.project_audit.build(
             point_layer, polygon_layer, attributes, quality,
-            pair_report, number_consistency
+            pair_report, number_consistency, number_format
         )
         self.logger.write(
             f"Полный аудит проекта: проблем {report.get('total', 0)}, "

@@ -402,6 +402,7 @@ class ControlCenterDialog(QtWidgets.QDialog):
                 f"Проверено пар точка/круг: {status['quality'].get('total', 0)}\n"
                 f"Нарушений правила 1 точка = 1 круг: {status.get('audit', {}).get('pair_integrity', {}).get('violations', 0)}\n"
                 f"Критических несовпадений номера точка/круг: {status.get('audit', {}).get('number_consistency', {}).get('mismatches', 0)}\n"
+                f"Неверных форматов номера: {status.get('audit', {}).get('number_format', {}).get('invalid', 0)}\n"
                 f"Кругов без замечаний: {status['quality'].get('ok', 0)}"
             )
         except Exception as exc:
@@ -427,6 +428,7 @@ class ControlCenterDialog(QtWidgets.QDialog):
             checked = report.get("checked", {})
             pair_report = report.get("pair_integrity", {})
             number_report = report.get("number_consistency", {})
+            number_format = report.get("number_format", {})
 
             lines = [
                 "ПОЛНЫЙ АУДИТ ПРОЕКТА",
@@ -449,6 +451,11 @@ class ControlCenterDialog(QtWidgets.QDialog):
                 f"Геометрически проверено пар: {number_report.get('checked', 0)}",
                 f"Критических несовпадений номеров: {number_report.get('mismatches', 0)}",
                 f"Не удалось однозначно сопоставить: {number_report.get('unresolved', 0)}",
+                "",
+                "ФОРМАТ НОМЕРА СКВАЖИНЫ",
+                f"Проверено заполненных номеров: {number_format.get('checked', 0)}",
+                f"Номеров с неверными символами: {number_format.get('invalid', 0)}",
+                "Разрешённый формат: только цифры 0-9.",
                 "",
                 f"Всего проблем: {report.get('total', 0)}",
                 f"Критических: {counts.get(Severity.CRITICAL, 0)}",
