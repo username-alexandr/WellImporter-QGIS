@@ -1,0 +1,24 @@
+name: Create historical Well Importer branches
+
+on:
+  push:
+    branches:
+      - chore/bootstrap-historical-branches
+    paths:
+      - history-bootstrap/READY
+
+permissions:
+  contents: write
+
+jobs:
+  build-historical-branches:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout bootstrap branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create archive/vX.Y.Z snapshots
+        shell: bash
+        run: bash history-bootstrap/create_branches.sh
