@@ -8,11 +8,10 @@ from .severity import Severity
 class AuditIssueList(QtWidgets.QWidget):
     """Интерактивный список проблем, сформированных полным аудитом проекта.
 
-    Виджет намеренно не знает ничего о карте QGIS. Он отвечает только за
-    фильтрацию, сортировку и выбор ошибки, а переход к объекту выполняет
-    ``ControlCenterDialog``. Такое разделение позволяет позже использовать
-    тот же список для режима «Следующая / Предыдущая ошибка» и мастера
-    исправления без дублирования логики таблицы.
+    Виджет отвечает за фильтрацию, сортировку, выбор и последовательный обход
+    ошибок. Переход к объекту на карте выполняет ``ControlCenterDialog`` через
+    сигнал ``issueActivated``. Поэтому таблица остаётся независимой от карты
+    QGIS и может использоваться другими окнами плагина.
     """
 
     issueActivated = QtCore.pyqtSignal(dict)
@@ -79,8 +78,15 @@ class AuditIssueList(QtWidgets.QWidget):
         self.lblCount = QtWidgets.QLabel("Ошибок: 0")
         footer.addWidget(self.lblCount)
         footer.addStretch(1)
+
+        self.btnPrev = QtWidgets.QPushButton("← Предыдущая ошибка")
+        self.btnNext = QtWidgets.QPushButton("Следующая ошибка →")
         self.btnShow = QtWidgets.QPushButton("Показать на карте")
-        self.btnShow.setEnabled(False)
+        self.btnPrev.setToolTip("Перейти к предыдущей видимой проблеме и показать её на карте")
+        self.btnNext.setToolTip("Перейти к следующей видимой проблеме и показать её на карте")
+        self.btnShow.setToolTip("Показать выбранную проблему на карте")
+        footer.addWidget(self.btnPrev)
+        footer.addWidget(self.btnNext)
         footer.addWidget(self.btnShow)
         layout.addLayout(footer)
 
@@ -90,6 +96,10 @@ class AuditIssueList(QtWidgets.QWidget):
         self.table.itemSelectionChanged.connect(self._selection_changed)
         self.table.itemDoubleClicked.connect(lambda _item: self.activate_current())
         self.btnShow.clicked.connect(self.activate_current)
+        self.btnPrev.clicked.connect(lambda: self.step(-1))
+        self.btnNext.clicked.connect(lambda: self.step(1))
+
+        self._update_navigation_state()
 
     def set_report(self, report):
         """Загружает новый результат полного аудита и обновляет фильтры."""
@@ -142,7 +152,7 @@ class AuditIssueList(QtWidgets.QWidget):
         return -1
 
     def select_visible_index(self, index):
-        """Выбирает видимую ошибку по индексу; API используется навигацией п.5."""
+        """Выбирает видимую ошибку по индексу без автоматического перехода к карте."""
         if not self._visible_issues:
             return None
         index = max(0, min(int(index), len(self._visible_issues) - 1))
@@ -155,6 +165,29 @@ class AuditIssueList(QtWidgets.QWidget):
                 return dict(target)
         return None
 
+    def step(self, direction):
+        """Переходит к соседней видимой ошибке и сразу активирует её на карте.
+
+        Навигация не зацикливается: на первой/последней записи соответствующая
+        кнопка отключается. Если ничего не выбрано, «Следующая» начинает с
+        первой ошибки, а «Предыдущая» — с последней.
+        """
+        if not self._visible_issues:
+            return None
+
+        current = self.current_visible_index()
+        if current < 0:
+            target_index = 0 if int(direction) >= 0 else len(self._visible_issues) - 1
+        else:
+            target_index = current + (1 if int(direction) >= 0 else -1)
+            target_index = max(0, min(target_index, len(self._visible_issues) - 1))
+
+        issue = self.select_visible_index(target_index)
+        if issue is not None:
+            self.issueActivated.emit(issue)
+        self._update_navigation_state()
+        return issue
+
     def activate_current(self):
         issue = self.current_issue()
         if issue is not None:
@@ -164,6 +197,25 @@ class AuditIssueList(QtWidgets.QWidget):
         issue = self.current_issue()
         self.btnShow.setEnabled(issue is not None)
         self.currentIssueChanged.emit(issue)
+        self._update_navigation_state()
+
+    def _update_navigation_state(self):
+        total = len(self._visible_issues)
+        current = self.current_visible_index()
+        self.btnShow.setEnabled(current >= 0)
+
+        if total <= 0:
+            self.btnPrev.setEnabled(False)
+            self.btnNext.setEnabled(False)
+            return
+
+        if current < 0:
+            self.btnPrev.setEnabled(True)
+            self.btnNext.setEnabled(True)
+            return
+
+        self.btnPrev.setEnabled(current > 0)
+        self.btnNext.setEnabled(current < total - 1)
 
     def _apply_filters(self):
         severity = self.cmbSeverity.currentData() or ""
@@ -215,5 +267,5 @@ class AuditIssueList(QtWidgets.QWidget):
         self.lblCount.setText(
             f"Показано: {len(self._visible_issues)} из {len(self._issues)}"
         )
-        self.btnShow.setEnabled(False)
         self.currentIssueChanged.emit(None)
+        self._update_navigation_state()
