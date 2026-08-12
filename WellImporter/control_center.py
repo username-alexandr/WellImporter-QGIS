@@ -10,6 +10,7 @@ from .history_dialog import HistoryDialog
 from .severity import Severity
 from .well_number_field import feature_well_number
 from .repair_wizard import RepairWizard
+from .audit_issue_list import AuditIssueList
 
 
 class ControlCenterDialog(QtWidgets.QDialog):
@@ -216,8 +217,22 @@ class ControlCenterDialog(QtWidgets.QDialog):
 
         self.txtQuality = QtWidgets.QPlainTextEdit()
         self.txtQuality.setReadOnly(True)
+        self.txtQuality.setMaximumHeight(190)
         self.txtQuality.setPlaceholderText("Результат полного аудита проекта")
-        v.addWidget(self.txtQuality, 1)
+        v.addWidget(self.txtQuality)
+
+        issues_box = QtWidgets.QGroupBox("Интерактивный список ошибок")
+        issues_layout = QtWidgets.QVBoxLayout(issues_box)
+        issues_note = QtWidgets.QLabel(
+            "Фильтруйте найденные проблемы, выбирайте строку и нажимайте «Показать на карте» "
+            "или дважды щёлкните по ошибке для перехода к связанному объекту."
+        )
+        issues_note.setWordWrap(True)
+        issues_layout.addWidget(issues_note)
+        self.auditIssueList = AuditIssueList()
+        self.auditIssueList.issueActivated.connect(self.show_audit_issue_on_map)
+        issues_layout.addWidget(self.auditIssueList, 1)
+        v.addWidget(issues_box, 1)
         self._add_scroll_tab(tab, "Контроль и исправление")
 
     def _build_parcel_tab(self):
@@ -268,7 +283,7 @@ class ControlCenterDialog(QtWidgets.QDialog):
         self.searchTable.setHorizontalHeaderLabels(["FID", "Номер", "Год", "Земельный участок", "Кадастровый номер"])
         self.searchTable.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.searchTable.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self.searchTable.doubleClicked.connect(self.zoom_selected_search)
+        self.searchTable.doubleClicked.connect(lambda _index: self.zoom_selected_search())
         self.searchTable.horizontalHeader().setStretchLastSection(True)
         v.addWidget(self.searchTable, 1)
 
@@ -434,7 +449,69 @@ class ControlCenterDialog(QtWidgets.QDialog):
                 lines.append("\nПроблем не обнаружено.")
 
             self.txtQuality.setPlainText("\n".join(lines))
+            self.auditIssueList.set_report(report)
             self.refresh_overview()
+        except Exception as exc:
+            self._error(exc)
+
+    def show_audit_issue_on_map(self, issue):
+        """Выбирает связанный с ошибкой объект и переводит карту к нему."""
+        try:
+            issue = dict(issue or {})
+            point_id, polygon_id = self._target_ids()
+            layer_id = str(issue.get("layer_id", "") or "")
+            feature_id = int(issue.get("feature_id", -1) or -1)
+            number = str(issue.get("number", "") or "").strip()
+
+            candidate_ids = []
+            if layer_id:
+                candidate_ids.append(layer_id)
+            for candidate in (point_id, polygon_id):
+                if candidate and candidate not in candidate_ids:
+                    candidate_ids.append(candidate)
+
+            target_layer = None
+            target_fid = -1
+
+            # Ошибки атрибутов уже содержат FID. Для геометрических проблем
+            # аудит иногда знает только номер скважины, поэтому объект ищется
+            # по единому логическому полю «Номер скважины».
+            if feature_id >= 0 and layer_id:
+                layer = QgsProject.instance().mapLayer(layer_id)
+                if layer is not None and layer.getFeature(feature_id).isValid():
+                    target_layer = layer
+                    target_fid = feature_id
+
+            if target_layer is None and number:
+                for candidate_id in candidate_ids:
+                    layer = QgsProject.instance().mapLayer(candidate_id)
+                    if layer is None:
+                        continue
+                    for feature in layer.getFeatures():
+                        if feature_well_number(feature, layer, "").strip() == number:
+                            target_layer = layer
+                            target_fid = feature.id()
+                            break
+                    if target_layer is not None:
+                        break
+
+            if target_layer is None or target_fid < 0:
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Интерактивный список ошибок",
+                    "Для этой проблемы не удалось однозначно определить объект на карте."
+                )
+                return
+
+            target_layer.removeSelection()
+            target_layer.selectByIds([target_fid])
+            self.main.iface.setActiveLayer(target_layer)
+            canvas = self.main.iface.mapCanvas()
+            if hasattr(canvas, "zoomToSelected"):
+                canvas.zoomToSelected(target_layer)
+            else:
+                self.main.iface.actionZoomToSelected().trigger()
+            canvas.refresh()
         except Exception as exc:
             self._error(exc)
 
@@ -453,6 +530,7 @@ class ControlCenterDialog(QtWidgets.QDialog):
                     "Полный аудит не обнаружил проблем, требующих исправления."
                 )
                 self.txtQuality.setPlainText("Полный аудит: проблем не обнаружено.")
+                self.auditIssueList.set_report(audit)
                 return
 
             wizard = RepairWizard(audit, self)
@@ -489,6 +567,8 @@ class ControlCenterDialog(QtWidgets.QDialog):
             if after.get("total", 0):
                 lines.append("Оставшиеся проблемы будут доступны для дальнейшего анализа.")
             self.txtQuality.setPlainText("\n".join(lines))
+            self.last_audit_report = after
+            self.auditIssueList.set_report(after)
             self.main.refresh_dashboard()
             self.refresh_overview()
             QtWidgets.QMessageBox.information(
