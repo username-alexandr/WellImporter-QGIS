@@ -12,7 +12,7 @@ class RepairWizard(QtWidgets.QWizard):
         super().__init__(parent)
         self.audit = audit_report or {}
         self.setWindowTitle("Мастер исправления ошибок — Well Importer")
-        self.resize(780, 560)
+        self.resize(780, 590)
         self.setOption(QtWidgets.QWizard.NoBackButtonOnStartPage, True)
 
         self._build_summary_page()
@@ -69,7 +69,7 @@ class RepairWizard(QtWidgets.QWizard):
         layout = QtWidgets.QVBoxLayout(page)
 
         intro = QtWidgets.QLabel(
-            "Автоматически выполняются только уже поддерживаемые Well Importer операции. "
+            "Автоматически выполняются только поддерживаемые Well Importer операции. "
             "Заполненные значения не перезаписываются без необходимости."
         )
         intro.setWordWrap(True)
@@ -77,6 +77,10 @@ class RepairWizard(QtWidgets.QWizard):
 
         quality_failed = int(self.audit.get("quality", {}).get("failed", 0) or 0)
         has_issues = int(self.audit.get("total", 0) or 0) > 0
+        has_pair_issues = any(
+            str(issue.get("category", "") or "") == "Соответствие точка ↔ круг"
+            for issue in self.audit.get("issues", [])
+        )
 
         points_box = QtWidgets.QGroupBox("Точки бурения")
         points_layout = QtWidgets.QVBoxLayout(points_box)
@@ -93,7 +97,18 @@ class RepairWizard(QtWidgets.QWizard):
 
         circles_box = QtWidgets.QGroupBox("Площадные круги")
         circles_layout = QtWidgets.QVBoxLayout(circles_box)
-        self.chk_circles = QtWidgets.QCheckBox("Исправить площадные круги")
+
+        self.chk_missing_circles = QtWidgets.QCheckBox(
+            "Создать отсутствующие круги для существующих точек бурения"
+        )
+        self.chk_missing_circles.setToolTip(
+            "Для каждой пронумерованной точки без соответствующего круга будет создан "
+            "круг заданной площади с центром точно в точке бурения."
+        )
+        self.chk_missing_circles.setChecked(has_pair_issues)
+        circles_layout.addWidget(self.chk_missing_circles)
+
+        self.chk_circles = QtWidgets.QCheckBox("Исправить существующие площадные круги")
         self.chk_circles.setChecked(quality_failed > 0)
         circles_layout.addWidget(self.chk_circles)
 
@@ -145,6 +160,8 @@ class RepairWizard(QtWidgets.QWizard):
             operations = []
             if plan["repair_points"]:
                 operations.append("• исправление точек бурения")
+            if plan["create_missing_circles"]:
+                operations.append("• создание отсутствующих площадных кругов")
             if plan["repair_circles"]:
                 details = []
                 if plan["repair_area"]:
@@ -152,7 +169,7 @@ class RepairWizard(QtWidgets.QWizard):
                 if plan["repair_center"]:
                     details.append("центрирование")
                 suffix = f" ({', '.join(details)})" if details else ""
-                operations.append("• исправление площадных кругов" + suffix)
+                operations.append("• исправление существующих площадных кругов" + suffix)
             if plan["sync_circle_attributes"]:
                 operations.append("• синхронизация служебных атрибутов кругов")
 
@@ -167,6 +184,7 @@ class RepairWizard(QtWidgets.QWizard):
             plan = self.plan()
             if not any((
                 plan["repair_points"],
+                plan["create_missing_circles"],
                 plan["repair_circles"],
                 plan["sync_circle_attributes"],
             )):
@@ -182,7 +200,7 @@ class RepairWizard(QtWidgets.QWizard):
                 QtWidgets.QMessageBox.warning(
                     self,
                     "Мастер исправления ошибок",
-                    "Для исправления площадных кругов выберите площадь и/или центрирование."
+                    "Для исправления существующих кругов выберите площадь и/или центрирование."
                 )
                 return False
         return super().validateCurrentPage()
@@ -191,6 +209,7 @@ class RepairWizard(QtWidgets.QWizard):
         """Возвращает выбранный пользователем план исправления."""
         return {
             "repair_points": bool(self.chk_points.isChecked()),
+            "create_missing_circles": bool(self.chk_missing_circles.isChecked()),
             "repair_circles": bool(self.chk_circles.isChecked()),
             "repair_area": bool(self.chk_area.isChecked()),
             "repair_center": bool(self.chk_center.isChecked()),

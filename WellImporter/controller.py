@@ -336,6 +336,7 @@ class ImportController:
         plan = dict(plan or {})
         if not any((
             plan.get("repair_points"),
+            plan.get("create_missing_circles"),
             plan.get("repair_circles"),
             plan.get("sync_circle_attributes"),
         )):
@@ -354,11 +355,17 @@ class ImportController:
                 point_layer_id, polygon_layer_id, default_year
             )
 
+        if plan.get("create_missing_circles"):
+            operations["missing_circles"] = self.create_missing_circles(
+                point_layer_id, polygon_layer_id, expected_area_ha
+            )
+
         if plan.get("repair_circles"):
             operations["circles"] = self.repair_circles(
                 point_layer_id, polygon_layer_id, expected_area_ha,
                 repair_area=bool(plan.get("repair_area", True)),
                 repair_center=bool(plan.get("repair_center", True)),
+                create_missing=False,
             )
 
         if plan.get("sync_circle_attributes"):
@@ -381,9 +388,25 @@ class ImportController:
             "fixed": max(0, int(before.get("total", 0)) - int(after.get("total", 0))),
         }
 
+    def create_missing_circles(self, point_layer_id, polygon_layer_id, expected_area_ha=33.0):
+        """Создаёт круги только для тех существующих точек, у которых их ещё нет."""
+        point_layer = self.layer_by_id(point_layer_id)
+        polygon_layer = self.layer_by_id(polygon_layer_id)
+        self._validate_layers(point_layer, polygon_layer)
+        result = self.circle_repair.create_missing_circles(
+            point_layer, polygon_layer, expected_area_ha
+        )
+        self._refresh_layer(polygon_layer)
+        self.iface.mapCanvas().refresh()
+        self.logger.write(
+            f"Создание отсутствующих кругов: создано {result.get('created', 0)}"
+        )
+        return result
+
     def repair_circles(self, point_layer_id, polygon_layer_id, expected_area_ha=33.0,
                        repair_area=True, repair_center=True,
-                       area_tolerance_pct=2.0, center_tolerance_m=5.0):
+                       area_tolerance_pct=2.0, center_tolerance_m=5.0,
+                       create_missing=True):
         """
         Исправляет площадные круги и создаёт отсутствующие круги
         для существующих точек с номером скважины.
@@ -392,11 +415,13 @@ class ImportController:
         polygon_layer = self.layer_by_id(polygon_layer_id)
         self._validate_layers(point_layer, polygon_layer)
 
-        created = self.circle_repair.create_missing_circles(
-            point_layer,
-            polygon_layer,
-            expected_area_ha,
-        )
+        created = {"created": 0}
+        if create_missing:
+            created = self.circle_repair.create_missing_circles(
+                point_layer,
+                polygon_layer,
+                expected_area_ha,
+            )
 
         result = self.circle_repair.repair(
             point_layer, polygon_layer, expected_area_ha,
