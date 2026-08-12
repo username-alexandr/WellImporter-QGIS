@@ -7,6 +7,8 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
+from qgis.core import Qgis, QgsProject, QgsRasterLayer
+
 
 class FieldPackageBuilder:
     """Создаёт один ZIP, содержащий все материалы для выезда."""
@@ -109,6 +111,14 @@ class FieldPackageBuilder:
                         encoding="utf-8",
                     )
 
+            offline_basemap_attached = False
+            if offline_cache_name and export_result.get("project_path"):
+                offline_basemap_attached = self._attach_offline_basemap(
+                    export_result.get("project_path"),
+                    root / offline_cache_name,
+                    (last_cache or {}).get("name", "Офлайн-фон"),
+                )
+
             package_manifest = {
                 "format": 2,
                 "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -123,6 +133,7 @@ class FieldPackageBuilder:
                 "preflight": preflight_path.name,
                 "basemap_manifest": basemap_path.name,
                 "offline_basemap_cache": offline_cache_name,
+                "offline_basemap_attached": bool(offline_basemap_attached),
             }
             manifest_path = root / self.MANIFEST_NAME
             manifest_path.write_text(
@@ -137,10 +148,8 @@ class FieldPackageBuilder:
                     if file_path.is_file():
                         archive.write(file_path, file_path.relative_to(root).as_posix())
 
-            files = [
-                item.filename
-                for item in zipfile.ZipFile(output, "r").infolist()
-            ]
+            with zipfile.ZipFile(output, "r") as check_archive:
+                files = [item.filename for item in check_archive.infolist()]
 
         result = dict(export_result)
         result.update({
@@ -156,6 +165,26 @@ class FieldPackageBuilder:
             "info_path": package_manifest["readme"],
         })
         return result
+
+    def _attach_offline_basemap(self, project_path, cache_path, name):
+        """Добавляет MBTiles в выездной QGIS-проект как нижний фоновый слой."""
+        project_path = Path(project_path)
+        cache_path = Path(cache_path)
+        if not project_path.is_file() or not cache_path.is_file():
+            return False
+        project = QgsProject()
+        if not project.read(str(project_path)):
+            return False
+        try:
+            project.setFilePathStorage(Qgis.FilePathType.Relative)
+        except Exception:
+            pass
+        layer = QgsRasterLayer(str(cache_path), f"Фоновая карта — {name}", "gdal")
+        if not layer.isValid():
+            return False
+        project.addMapLayer(layer, False)
+        project.layerTreeRoot().addLayer(layer)
+        return bool(project.write(str(project_path)))
 
     def _safe_basemap_definition(self, name):
         definition = self.basemaps.definition(name)

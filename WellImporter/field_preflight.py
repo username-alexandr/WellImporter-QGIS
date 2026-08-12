@@ -53,7 +53,7 @@ class FieldPreflightChecker:
         if missing:
             for item in missing:
                 issues.append({
-                    "severity": Severity.ERROR,
+                    "severity": Severity.CRITICAL,
                     "title": "Внешний файл",
                     "message": f"Не найден внешний файл: {item['path']}",
                     "source": item.get("source", ""),
@@ -77,7 +77,7 @@ class FieldPreflightChecker:
         results = []
         for layer in self.project.mapLayers().values():
             source = str(layer.source() or "")
-            urls = self.URL_RE.findall(unquote(source))
+            urls = self._extract_urls(source)
             if not urls:
                 continue
             url = self._sample_url(urls[0])
@@ -185,6 +185,20 @@ class FieldPreflightChecker:
         text = str(value or "").strip()
         suffix = Path(text.split("?", 1)[0]).suffix.lower()
         return suffix in self.FILE_EXTENSIONS
+
+    def _extract_urls(self, source):
+        """Извлекает URL сервиса из provider source, не захватывая соседние параметры."""
+        raw = str(source or "").strip()
+        if not raw:
+            return []
+        values = []
+        for match in re.finditer(r"(?:^|[&|])url=([^&|]+)", raw, re.IGNORECASE):
+            value = unquote(match.group(1)).strip().strip("'\"")
+            if value.lower().startswith(("http://", "https://")):
+                values.append(value)
+        if values:
+            return values
+        return self.URL_RE.findall(unquote(raw))
 
     def _sample_url(self, url):
         return (

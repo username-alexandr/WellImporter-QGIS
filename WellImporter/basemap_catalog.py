@@ -5,6 +5,7 @@ from pathlib import Path
 
 from qgis.PyQt import QtCore, QtNetwork
 from qgis.PyQt.QtCore import QSettings, QUrl
+from qgis.PyQt.QtGui import QColor
 from qgis.core import (
     Qgis,
     QgsApplication,
@@ -121,7 +122,7 @@ class BasemapCatalog:
             target.setCustomProperty(self.BASEMAP_PROPERTY, name)
             target.setCustomProperty("WellImporter/attribution", definition.get("attribution", ""))
             self.project.addMapLayer(target, False)
-            self.project.layerTreeRoot().insertLayer(0, target)
+            self.project.layerTreeRoot().addLayer(target)
 
         root = self.project.layerTreeRoot()
         for layer in self.project.mapLayers().values():
@@ -208,7 +209,7 @@ class BasemapCatalog:
                 "ZOOM_MIN": int(min_zoom),
                 "ZOOM_MAX": min(int(max_zoom), int(self.definition(name)["max_zoom"])),
                 "DPI": 96,
-                "BACKGROUND_COLOR": QtCore.Qt.transparent,
+                "BACKGROUND_COLOR": QColor(0, 0, 0, 0),
                 "TILE_FORMAT": 0,
                 "QUALITY": 85,
                 "METATILESIZE": 4,

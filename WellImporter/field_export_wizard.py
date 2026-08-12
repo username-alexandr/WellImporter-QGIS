@@ -293,7 +293,7 @@ class FieldExportWizard(QtWidgets.QWizard):
             })
         recommendations.sort(
             key=lambda item: (
-                -Severity.RANK.get(Severity.normalize(item["severity"]), 0),
+                -Severity.ORDER.get(Severity.normalize(item["severity"]), 0),
                 item["message"].casefold(),
             )
         )
