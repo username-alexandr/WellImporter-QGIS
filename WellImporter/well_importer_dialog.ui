@@ -3,21 +3,12 @@
  <class>WellImporterDialog</class>
  <widget class="QDialog" name="WellImporterDialog">
   <property name="geometry">
-   <rect><x>0</x><y>0</y><width>720</width><height>680</height></rect>
+   <rect><x>0</x><y>0</y><width>620</width><height>520</height></rect>
   </property>
-  <property name="windowTitle">
-   <string>Well Importer 2.0 — управление скважинами</string>
-  </property>
-  <layout class="QVBoxLayout" name="verticalLayout">
-   <item>
-    <widget class="QLabel" name="titleLabel">
-     <property name="text">
-      <string>Well Importer 2.0 — импорт, контроль качества, земельные участки, поиск, профили и выездной экспорт</string>
-     </property>
-    </widget>
-   </item>
-  </layout>
+  <property name="windowTitle"><string>Well Importer</string></property>
  </widget>
- <resources/>
+ <resources>
+  <include location="resources.qrc"/>
+ </resources>
  <connections/>
 </ui>
