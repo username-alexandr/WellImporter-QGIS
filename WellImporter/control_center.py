@@ -20,6 +20,7 @@ class ControlCenterDialog(QtWidgets.QDialog):
         self.controller = main_dialog.controller
         self.settings = main_dialog.settings
         self.current_search_results = []
+        self.last_audit_report = None
         self.setWindowTitle("Центр управления Well Importer")
         self.setMinimumSize(560, 420)
         self._resize_to_available_screen()
@@ -173,15 +174,29 @@ class ControlCenterDialog(QtWidgets.QDialog):
         tab = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(tab)
 
-        required = QtWidgets.QGroupBox("Обязательные атрибуты")
+        audit_box = QtWidgets.QGroupBox("Полный аудит проекта")
+        audit_layout = QtWidgets.QVBoxLayout(audit_box)
+        audit_note = QtWidgets.QLabel(
+            "Одна проверка анализирует обязательные атрибуты, наличие пар точка/круг, "
+            "площадь и центрирование площадных кругов. Аудит ничего не изменяет в слоях."
+        )
+        audit_note.setWordWrap(True)
+        audit_layout.addWidget(audit_note)
+        self.btnFullAudit = QtWidgets.QPushButton("Полный аудит проекта")
+        self.btnFullAudit.setMinimumHeight(42)
+        font = self.btnFullAudit.font()
+        font.setBold(True)
+        self.btnFullAudit.setFont(font)
+        self.btnFullAudit.clicked.connect(self.full_project_audit)
+        audit_layout.addWidget(self.btnFullAudit)
+        v.addWidget(audit_box)
+
+        required = QtWidgets.QGroupBox("Параметры обязательных атрибутов")
         form = QtWidgets.QFormLayout(required)
         self.txtRequiredPoints = QtWidgets.QLineEdit(", ".join(self.settings.required_point_fields()))
         self.txtRequiredPolygons = QtWidgets.QLineEdit(", ".join(self.settings.required_polygon_fields()))
         form.addRow("Поля скважин:", self.txtRequiredPoints)
         form.addRow("Поля кругов:", self.txtRequiredPolygons)
-        btnAttrs = QtWidgets.QPushButton("Проверить обязательные атрибуты")
-        btnAttrs.clicked.connect(self.check_attributes)
-        form.addRow(btnAttrs)
         v.addWidget(required)
 
         circles = QtWidgets.QGroupBox("Автоматическое исправление объектов")
@@ -192,25 +207,23 @@ class ControlCenterDialog(QtWidgets.QDialog):
         self.chkRepairCenter.setChecked(True)
         c.addWidget(self.chkRepairArea, 0, 0, 1, 2)
         c.addWidget(self.chkRepairCenter, 1, 0, 1, 2)
-        btnValidate = QtWidgets.QPushButton("Проверить все круги")
         btnRepairCircles = QtWidgets.QPushButton("Исправить площадные круги")
         btnRepairPoints = QtWidgets.QPushButton("Исправить точки бурения")
         btnSyncAttrs = QtWidgets.QPushButton("Синхронизировать атрибуты кругов")
 
-        btnValidate.clicked.connect(self.validate_all)
         btnRepairCircles.clicked.connect(self.repair_circles)
         btnRepairPoints.clicked.connect(self.repair_points)
         btnSyncAttrs.clicked.connect(self.sync_circle_attributes)
 
-        # Две отдельные основные кнопки исправления.
+        # Исправления остаются отдельными операциями и не запускаются самим аудитом.
         c.addWidget(btnRepairCircles, 2, 0)
         c.addWidget(btnRepairPoints, 2, 1)
-        c.addWidget(btnValidate, 3, 0)
-        c.addWidget(btnSyncAttrs, 3, 1)
+        c.addWidget(btnSyncAttrs, 3, 0, 1, 2)
         v.addWidget(circles)
 
         self.txtQuality = QtWidgets.QPlainTextEdit()
         self.txtQuality.setReadOnly(True)
+        self.txtQuality.setPlaceholderText("Результат полного аудита проекта")
         v.addWidget(self.txtQuality, 1)
         self._add_scroll_tab(tab, "Контроль и исправление")
 
@@ -372,6 +385,7 @@ class ControlCenterDialog(QtWidgets.QDialog):
             self._set_metric(self.lblImports, "Импорты", status["imports"])
             self.lblLatest.setText(f"Последний импорт: {status.get('latest_import', '—')}")
             self.txtOverview.setPlainText(
+                f"Проблем по полному аудиту: {status.get('audit', {}).get('total', 0)}\n"
                 f"Критических проблем: {status.get('critical', 0)}\n"
                 f"Проблем обязательных атрибутов: {status['attributes'].get('total', 0)}\n"
                 f"Проверено пар точка/круг: {status['quality'].get('total', 0)}\n"
@@ -383,40 +397,49 @@ class ControlCenterDialog(QtWidgets.QDialog):
     def _set_metric(self, label, title, value):
         label.setText(f"<b>{title}</b><br><span style='font-size:22px'>{value}</span>")
 
-    def check_attributes(self):
+    def full_project_audit(self):
+        """Запускает единственную пользовательскую команду аудита всего проекта."""
         try:
             point_id, polygon_id = self._target_ids()
             point_fields, polygon_fields = self._required_fields()
-            report = self.controller.check_required_attributes(point_id, polygon_id, point_fields, polygon_fields)
+            report = self.controller.full_project_audit(
+                point_id,
+                polygon_id,
+                self.main.ui.spinArea.value(),
+                point_fields,
+                polygon_fields,
+            )
+            self.last_audit_report = report
             counts = report.get("severity_counts", {})
-            lines = [
-                f"Найдено проблем: {report.get('total', 0)}",
-                f"Критических: {counts.get(Severity.CRITICAL, 0)}",
-                f"Ошибок: {counts.get(Severity.ERROR, 0)}",
-                f"Предупреждений: {counts.get(Severity.WARNING, 0)}",
-            ]
-            for issue in report.get("issues", [])[:30]:
-                lines.append(f"[{Severity.label(issue['severity'])}] {issue['layer_name']} / №{issue['number']}: {issue['message']}")
-            self.txtQuality.setPlainText("\n".join(lines))
-            self.refresh_overview()
-        except Exception as exc:
-            self._error(exc)
+            checked = report.get("checked", {})
 
-    def validate_all(self):
-        try:
-            point_id, polygon_id = self._target_ids()
-            report = self.controller.validate_all_circles(point_id, polygon_id, self.main.ui.spinArea.value())
-            counts = report.get("severity_counts", {})
             lines = [
-                f"Проверено: {report.get('total', 0)}",
-                f"Без замечаний: {report.get('ok', 0)}",
-                f"С замечаниями: {report.get('failed', 0)}",
+                "ПОЛНЫЙ АУДИТ ПРОЕКТА",
+                "=" * 24,
+                f"Проверено скважин: {checked.get('points', 0)}",
+                f"Проверено площадных кругов: {checked.get('circles', 0)}",
+                f"Проверено пар точка/круг: {checked.get('pairs', 0)}",
+                f"Кругов без замечаний: {checked.get('circles_ok', 0)}",
+                "",
+                f"Всего проблем: {report.get('total', 0)}",
                 f"Критических: {counts.get(Severity.CRITICAL, 0)}",
                 f"Ошибок: {counts.get(Severity.ERROR, 0)}",
                 f"Предупреждений: {counts.get(Severity.WARNING, 0)}",
             ]
-            for item in [x for x in report.get("items", []) if not (x.get("area_ok") and x.get("center_ok"))][:30]:
-                lines.append(f"№{item.get('number')} [{Severity.label(item.get('severity'))}]: {item.get('message')}")
+
+            issues = report.get("issues", [])
+            if issues:
+                lines.append("\nПервые найденные проблемы:")
+                for issue in issues[:50]:
+                    number = issue.get("number", "") or "—"
+                    lines.append(
+                        f"[{Severity.label(issue.get('severity'))}] "
+                        f"{issue.get('category', '')} / №{number}: "
+                        f"{issue.get('message', '')}"
+                    )
+            else:
+                lines.append("\nПроблем не обнаружено.")
+
             self.txtQuality.setPlainText("\n".join(lines))
             self.refresh_overview()
         except Exception as exc:
@@ -632,8 +655,9 @@ class ControlCenterDialog(QtWidgets.QDialog):
         try:
             point_id, polygon_id = self._target_ids()
             point_fields, polygon_fields = self._required_fields()
-            attr_report = self.controller.check_required_attributes(point_id, polygon_id, point_fields, polygon_fields)
-            quality_report = self.controller.validate_all_circles(point_id, polygon_id, self.main.ui.spinArea.value())
+            audit_report = self.controller.full_project_audit(
+                point_id, polygon_id, self.main.ui.spinArea.value(), point_fields, polygon_fields
+            )
             path, _ = QtWidgets.QFileDialog.getSaveFileName(
                 self, "Сохранить отчёт контроля",
                 str(Path(self.main._default_output_dir()) / "WellImporter_Project_Audit.csv"),
@@ -644,17 +668,10 @@ class ControlCenterDialog(QtWidgets.QDialog):
             with open(path, "w", encoding="utf-8-sig", newline="") as stream:
                 writer = csv.writer(stream, delimiter=";")
                 writer.writerow(["Тип проверки", "Слой/объект", "Номер скважины", "Серьёзность", "Проблема"])
-                for issue in attr_report.get("issues", []):
+                for issue in audit_report.get("issues", []):
                     writer.writerow([
-                        "Обязательный атрибут", issue.get("layer_name", ""), issue.get("number", ""),
+                        issue.get("category", ""), issue.get("layer_name", ""), issue.get("number", ""),
                         Severity.label(issue.get("severity")), issue.get("message", ""),
-                    ])
-                for item in quality_report.get("items", []):
-                    if item.get("area_ok") and item.get("center_ok"):
-                        continue
-                    writer.writerow([
-                        "Площадной круг", "Площадные круги", item.get("number", ""),
-                        Severity.label(item.get("severity")), item.get("message", ""),
                     ])
             QtWidgets.QMessageBox.information(self, "Отчёт", f"Полный отчёт контроля сохранён:\n{path}")
         except Exception as exc:

@@ -60,7 +60,6 @@ class WellImporterDialog(QtWidgets.QDialog):
         self.ui.btnRefreshLayers.clicked.connect(self.refresh_layers)
         self.ui.btnHistory.clicked.connect(self.show_history)
         self.ui.btnUndo.clicked.connect(self.undo_last_import)
-        self.ui.btnValidate.clicked.connect(self.validate_last_import)
         self.ui.btnArchive.clicked.connect(self.archive_old_imports)
         self.ui.btnExportField.clicked.connect(self.export_for_field)
         self.ui.btnDashboardRefresh.clicked.connect(self.refresh_dashboard)

@@ -20,6 +20,7 @@ from .severity import Severity
 from .attribute_checker import AttributeChecker
 from .circle_repair import CircleRepairManager
 from .point_repair import PointRepairManager
+from .project_audit import ProjectAuditManager
 from .parcel_tools import ParcelManager
 from .well_search import WellSearchManager
 from .well_card import WellCardManager
@@ -75,6 +76,7 @@ class ImportController:
         self.attributes = AttributeChecker()
         self.circle_repair = CircleRepairManager()
         self.point_repair = PointRepairManager()
+        self.project_audit = ProjectAuditManager()
         self.parcels = ParcelManager()
         self.well_search = WellSearchManager()
         self.well_cards = WellCardManager()
@@ -287,6 +289,36 @@ class ImportController:
         self._validate_layers(point_layer, polygon_layer, require_editable=False)
         return self.attributes.check(point_layer, polygon_layer, point_fields, polygon_fields)
 
+    def full_project_audit(self, point_layer_id, polygon_layer_id, expected_area_ha=33.0,
+                           point_fields=None, polygon_fields=None):
+        """
+        Выполняет единый аудит выбранных рабочих слоёв проекта.
+
+        Аудит объединяет существующие проверки обязательных атрибутов и
+        геометрии/пар точка-круг в один отчёт. Метод только читает данные и
+        ничего не исправляет автоматически.
+        """
+        point_layer = self.layer_by_id(point_layer_id)
+        polygon_layer = self.layer_by_id(polygon_layer_id)
+        self._validate_layers(point_layer, polygon_layer, require_editable=False)
+
+        attributes = self.attributes.check(
+            point_layer, polygon_layer, point_fields, polygon_fields
+        )
+        quality = self.quality.validate_all(
+            point_layer, polygon_layer, expected_area_ha
+        )
+        report = self.project_audit.build(
+            point_layer, polygon_layer, attributes, quality
+        )
+        self.logger.write(
+            f"Полный аудит проекта: проблем {report.get('total', 0)}, "
+            f"критических {report.get('severity_counts', {}).get(Severity.CRITICAL, 0)}, "
+            f"ошибок {report.get('severity_counts', {}).get(Severity.ERROR, 0)}, "
+            f"предупреждений {report.get('severity_counts', {}).get(Severity.WARNING, 0)}"
+        )
+        return report
+
     def validate_all_circles(self, point_layer_id, polygon_layer_id, expected_area_ha=33.0,
                              area_tolerance_pct=2.0, center_tolerance_m=5.0):
         point_layer = self.layer_by_id(point_layer_id)
@@ -412,16 +444,17 @@ class ImportController:
 
     def project_status(self, point_layer_id, polygon_layer_id, expected_area_ha=33.0,
                        point_fields=None, polygon_fields=None):
+        """Возвращает состояние панели на основе того же единого аудита проекта."""
         point_layer = self.layer_by_id(point_layer_id)
         polygon_layer = self.layer_by_id(polygon_layer_id)
-        self._validate_layers(point_layer, polygon_layer, require_editable=False)
-        attrs = self.attributes.check(point_layer, polygon_layer, point_fields, polygon_fields)
-        quality = self.quality.validate_all(point_layer, polygon_layer, expected_area_ha)
-        attr_counts = attrs.get("severity_counts", {})
-        quality_counts = quality.get("severity_counts", {})
-        critical = attr_counts.get(Severity.CRITICAL, 0) + quality_counts.get(Severity.CRITICAL, 0)
-        errors = attr_counts.get(Severity.ERROR, 0) + quality_counts.get(Severity.ERROR, 0) + critical
-        warnings = attr_counts.get(Severity.WARNING, 0) + quality_counts.get(Severity.WARNING, 0)
+        audit = self.full_project_audit(
+            point_layer_id, polygon_layer_id, expected_area_ha,
+            point_fields, polygon_fields,
+        )
+        counts = audit.get("severity_counts", {})
+        critical = counts.get(Severity.CRITICAL, 0)
+        errors = counts.get(Severity.ERROR, 0) + critical
+        warnings = counts.get(Severity.WARNING, 0)
         history_items = self.history.items()
         return {
             "wells": point_layer.featureCount(),
@@ -431,8 +464,9 @@ class ImportController:
             "critical": critical,
             "imports": len(history_items),
             "latest_import": history_items[0].get("timestamp", "") if history_items else "—",
-            "attributes": attrs,
-            "quality": quality,
+            "attributes": audit.get("attributes", {}),
+            "quality": audit.get("quality", {}),
+            "audit": audit,
         }
 
     def _resolve_layer(self, layer_id, layer_name):
