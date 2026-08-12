@@ -25,9 +25,6 @@ dist/
 *.zip
 *.log
 
-# Historical release packages are intentionally tracked.
-!archive/releases/*.zip
-
 # Temporary files
 *.tmp
 *.bak
