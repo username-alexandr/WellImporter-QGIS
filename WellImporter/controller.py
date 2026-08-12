@@ -495,6 +495,33 @@ class ImportController:
         )
         return result
 
+    def detect_parcel_source(self, polygon_layer_id=None):
+        """Автоматически определяет слой земельных участков и подходящие поля."""
+        excluded = [polygon_layer_id] if polygon_layer_id else []
+        source = self.parcels.detect_source(excluded)
+        return {
+            "layer_id": source.get("layer_id", ""),
+            "layer_name": source.get("layer_name", ""),
+            "label_field": source.get("label_field", ""),
+            "cadastral_field": source.get("cadastral_field", ""),
+            "score": source.get("score", 0),
+        }
+
+    def assign_parcel_names_auto(self, point_layer_id, polygon_layer_id=None, selected_only=False):
+        """Определяет земельные участки автоматически, без выбора слоя или поля."""
+        point_layer = self.layer_by_id(point_layer_id)
+        excluded = [polygon_layer_id] if polygon_layer_id else []
+        result = self.parcels.assign_parcel_names_auto(
+            point_layer, excluded_layer_ids=excluded, selected_only=selected_only
+        )
+        self._refresh_layer(point_layer)
+        self.iface.mapCanvas().refresh()
+        self.logger.write(
+            f"Автоопределение земельных участков: слой «{result.get('source_layer', '')}», "
+            f"найдено {result.get('found', 0)}, не найдено {result.get('not_found', 0)}"
+        )
+        return result
+
     def assign_parcels(self, point_layer_id, parcel_layer_id, cadastral_field,
                        parcel_label_field=None, selected_only=False):
         point_layer = self.layer_by_id(point_layer_id)

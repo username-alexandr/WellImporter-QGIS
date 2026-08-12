@@ -238,23 +238,39 @@ class ControlCenterDialog(QtWidgets.QDialog):
     def _build_parcel_tab(self):
         tab = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(tab)
-        form = QtWidgets.QFormLayout()
-        self.cmbParcelLayer = QtWidgets.QComboBox()
-        self.cmbParcelLabelField = QtWidgets.QComboBox()
-        self.cmbCadastralField = QtWidgets.QComboBox()
+
+        title = QtWidgets.QLabel(
+            "<b>Автоматическое определение земельных участков</b><br>"
+            "Well Importer самостоятельно анализирует полигональные слои проекта, "
+            "определяет слой земельных участков и поле его наименования. Ручной выбор не требуется."
+        )
+        title.setWordWrap(True)
+        v.addWidget(title)
+
+        source_box = QtWidgets.QGroupBox("Автоматически найденный источник")
+        source_layout = QtWidgets.QFormLayout(source_box)
+        self.lblParcelLayerAuto = QtWidgets.QLabel("—")
+        self.lblParcelFieldAuto = QtWidgets.QLabel("—")
+        self.lblCadastralFieldAuto = QtWidgets.QLabel("—")
+        self.lblParcelLayerAuto.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.lblParcelFieldAuto.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.lblCadastralFieldAuto.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        source_layout.addRow("Слой участков:", self.lblParcelLayerAuto)
+        source_layout.addRow("Поле участка:", self.lblParcelFieldAuto)
+        source_layout.addRow("Кадастровое поле (обнаружено):", self.lblCadastralFieldAuto)
+        v.addWidget(source_box)
+
         self.chkSelectedOnly = QtWidgets.QCheckBox("Обрабатывать только выделенные скважины")
-        form.addRow("Полигональный слой участков:", self.cmbParcelLayer)
-        form.addRow("Поле наименования участка:", self.cmbParcelLabelField)
-        form.addRow("Поле кадастрового номера:", self.cmbCadastralField)
-        form.addRow("", self.chkSelectedOnly)
-        v.addLayout(form)
-        self.cmbParcelLayer.currentIndexChanged.connect(self.refresh_parcel_fields)
-        btn = QtWidgets.QPushButton("Определить участки и заполнить кадастровые номера")
+        v.addWidget(self.chkSelectedOnly)
+
+        btn = QtWidgets.QPushButton("Автоматически определить земельные участки")
+        btn.setMinimumHeight(40)
         btn.clicked.connect(self.assign_parcels)
         v.addWidget(btn)
+
         note = QtWidgets.QLabel(
-            "Результат записывается в служебные поля WI_PARCEL и WI_CAD точечного слоя. "
-            "Для них автоматически задаются псевдонимы «Земельный участок» и «Кадастровый номер»."
+            "Результат записывается в поле WI_PARCEL с псевдонимом «Земельный участок». "
+            "Если точка попадает в несколько полигонов, выбирается участок с ближайшим центроидом."
         )
         note.setWordWrap(True)
         v.addWidget(note)
@@ -341,37 +357,18 @@ class ControlCenterDialog(QtWidgets.QDialog):
         self._add_scroll_tab(tab, "Отчётность")
 
     def refresh_layers(self):
-        current = self.cmbParcelLayer.currentText() if self.cmbParcelLayer.count() else self.settings.parcel_layer_name()
-        self.cmbParcelLayer.clear()
-        self.cmbParcelLayer.addItem("— выберите слой —", None)
-        for layer in QgsProject.instance().mapLayers().values():
-            if layer.type() != QgsMapLayerType.VectorLayer:
-                continue
-            if QgsWkbTypes.geometryType(layer.wkbType()) == QgsWkbTypes.PolygonGeometry:
-                self.cmbParcelLayer.addItem(layer.name(), layer.id())
-        index = self.cmbParcelLayer.findText(current)
-        if index >= 0:
-            self.cmbParcelLayer.setCurrentIndex(index)
-        self.refresh_parcel_fields()
-
-    def refresh_parcel_fields(self):
-        layer_id = self.cmbParcelLayer.currentData()
-        layer = QgsProject.instance().mapLayer(layer_id) if layer_id else None
-        previous_label = self.cmbParcelLabelField.currentText() or self.settings.parcel_label_field()
-        previous_cad = self.cmbCadastralField.currentText() or self.settings.cadastral_field()
-        self.cmbParcelLabelField.clear()
-        self.cmbCadastralField.clear()
-        self.cmbParcelLabelField.addItem("— FID / кадастровый номер —", "")
-        if layer:
-            for field in layer.fields():
-                self.cmbParcelLabelField.addItem(field.name(), field.name())
-                self.cmbCadastralField.addItem(field.name(), field.name())
-        idx = self.cmbParcelLabelField.findText(previous_label)
-        if idx >= 0:
-            self.cmbParcelLabelField.setCurrentIndex(idx)
-        idx = self.cmbCadastralField.findText(previous_cad)
-        if idx >= 0:
-            self.cmbCadastralField.setCurrentIndex(idx)
+        """Обновляет сведения об автоматически выбранном слое участков."""
+        try:
+            _, polygon_id = self._target_ids()
+            source = self.controller.detect_parcel_source(polygon_id)
+            self.lblParcelLayerAuto.setText(source.get("layer_name", "—") or "—")
+            self.lblParcelFieldAuto.setText(source.get("label_field", "—") or "—")
+            self.lblCadastralFieldAuto.setText(source.get("cadastral_field", "—") or "—")
+        except Exception as exc:
+            self.lblParcelLayerAuto.setText("Не найден")
+            self.lblParcelFieldAuto.setText("—")
+            self.lblCadastralFieldAuto.setText("—")
+            self.txtParcels.setPlainText(str(exc))
 
     def _target_ids(self):
         return self.main._target_ids()
@@ -715,24 +712,22 @@ class ControlCenterDialog(QtWidgets.QDialog):
             self._error(exc)
 
     def assign_parcels(self):
-        parcel_id = self.cmbParcelLayer.currentData()
-        cad = self.cmbCadastralField.currentData()
-        label = self.cmbParcelLabelField.currentData()
-        if not parcel_id or not cad:
-            QtWidgets.QMessageBox.warning(self, "Земельные участки", "Выберите слой участков и поле кадастрового номера.")
-            return
+        """Определяет участок каждой скважины полностью автоматически."""
         try:
-            point_id, _ = self._target_ids()
-            result = self.controller.assign_parcels(
-                point_id, parcel_id, cad, parcel_label_field=label,
-                selected_only=self.chkSelectedOnly.isChecked(),
+            point_id, polygon_id = self._target_ids()
+            result = self.controller.assign_parcel_names_auto(
+                point_id, polygon_id, selected_only=self.chkSelectedOnly.isChecked()
             )
-            self.settings.set_parcel_settings(self.cmbParcelLayer.currentText(), label, cad)
+            self.lblParcelLayerAuto.setText(result.get("source_layer", "—") or "—")
+            self.lblParcelFieldAuto.setText(result.get("label_field", "—") or "—")
+            self.lblCadastralFieldAuto.setText(result.get("cadastral_field", "—") or "—")
             self.txtParcels.setPlainText(
-                f"Обработано скважин: {result['processed']}\n"
-                f"Участок найден: {result['found']}\n"
-                f"Не найден: {result['not_found']}\n"
-                f"Несколько пересечений: {result['multiple']}"
+                f"Источник определён автоматически: {result.get('source_layer', '—')}\n"
+                f"Поле участка: {result.get('label_field', '—') or '—'}\n\n"
+                f"Обработано скважин: {result.get('processed', 0)}\n"
+                f"Участок найден: {result.get('found', 0)}\n"
+                f"Не найден: {result.get('not_found', 0)}\n"
+                f"Несколько пересечений: {result.get('multiple', 0)}"
             )
             self.main.refresh_dashboard()
         except Exception as exc:
