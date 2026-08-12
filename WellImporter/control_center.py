@@ -401,6 +401,7 @@ class ControlCenterDialog(QtWidgets.QDialog):
                 f"Проблем обязательных атрибутов: {status['attributes'].get('total', 0)}\n"
                 f"Проверено пар точка/круг: {status['quality'].get('total', 0)}\n"
                 f"Нарушений правила 1 точка = 1 круг: {status.get('audit', {}).get('pair_integrity', {}).get('violations', 0)}\n"
+                f"Критических несовпадений номера точка/круг: {status.get('audit', {}).get('number_consistency', {}).get('mismatches', 0)}\n"
                 f"Кругов без замечаний: {status['quality'].get('ok', 0)}"
             )
         except Exception as exc:
@@ -425,6 +426,7 @@ class ControlCenterDialog(QtWidgets.QDialog):
             counts = report.get("severity_counts", {})
             checked = report.get("checked", {})
             pair_report = report.get("pair_integrity", {})
+            number_report = report.get("number_consistency", {})
 
             lines = [
                 "ПОЛНЫЙ АУДИТ ПРОЕКТА",
@@ -442,6 +444,11 @@ class ControlCenterDialog(QtWidgets.QDialog):
                 f"Кругов без точки: {pair_report.get('missing_points', 0)}",
                 f"Дублирующихся точек: {pair_report.get('duplicate_points', 0)}",
                 f"Дублирующихся кругов: {pair_report.get('duplicate_circles', 0)}",
+                "",
+                "КОНТРОЛЬ НОМЕРОВ ТОЧКА ↔ КРУГ",
+                f"Геометрически проверено пар: {number_report.get('checked', 0)}",
+                f"Критических несовпадений номеров: {number_report.get('mismatches', 0)}",
+                f"Не удалось однозначно сопоставить: {number_report.get('unresolved', 0)}",
                 "",
                 f"Всего проблем: {report.get('total', 0)}",
                 f"Критических: {counts.get(Severity.CRITICAL, 0)}",

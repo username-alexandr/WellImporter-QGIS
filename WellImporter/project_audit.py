@@ -20,9 +20,11 @@ class ProjectAuditManager:
         attribute_report,
         quality_report,
         pair_report=None,
+        number_consistency_report=None,
     ):
         issues = []
         pair_report = dict(pair_report or {})
+        number_consistency_report = dict(number_consistency_report or {})
 
         # Ошибки обязательных атрибутов уже содержат FID конкретного объекта.
         for issue in attribute_report.get("issues", []):
@@ -81,6 +83,25 @@ class ProjectAuditManager:
                 "message": str(item.get("message", "") or ""),
             })
 
+        # Несовпадение номера между геометрически связанной точкой и кругом
+        # всегда является критической ошибкой. Серьёзность принудительно
+        # устанавливается здесь ещё раз, чтобы правило нельзя было ослабить
+        # случайным изменением дочернего проверяющего модуля.
+        for item in number_consistency_report.get("items", []):
+            issues.append({
+                "source": "pair_number_consistency",
+                "category": str(
+                    item.get("category", "Несовпадение номера точки и круга")
+                    or "Несовпадение номера точки и круга"
+                ),
+                "layer_id": str(item.get("layer_id", "") or ""),
+                "layer_name": str(item.get("layer_name", "") or ""),
+                "feature_id": int(item.get("feature_id", -1) or -1),
+                "number": str(item.get("number", "") or ""),
+                "severity": Severity.CRITICAL,
+                "message": str(item.get("message", "") or ""),
+            })
+
         counts = Severity.counts(issue["severity"] for issue in issues)
         highest = Severity.max(*(issue["severity"] for issue in issues)) if issues else Severity.INFO
 
@@ -92,6 +113,7 @@ class ProjectAuditManager:
             "attributes": attribute_report,
             "quality": quality_report,
             "pair_integrity": pair_report,
+            "number_consistency": number_consistency_report,
             "checked": {
                 "points": int(point_layer.featureCount()),
                 "circles": int(polygon_layer.featureCount()),
