@@ -26,6 +26,11 @@ from .pair_number_checker import PairNumberConsistencyChecker
 from .well_number_validator import WellNumberFormatChecker
 from .statistics_panel import StatisticsManager
 from .field_scope import FieldScopeManager
+from .basemap_catalog import BasemapCatalog
+from .field_preflight import FieldPreflightChecker
+from .field_sync import FieldSyncManager
+from .web_map_export import WebMapExporter
+from .field_package import FieldPackageBuilder
 from .parcel_tools import ParcelManager
 from .well_search import WellSearchManager
 from .well_card import WellCardManager
@@ -87,6 +92,14 @@ class ImportController:
         self.number_format = WellNumberFormatChecker()
         self.statistics = StatisticsManager()
         self.field_scope = FieldScopeManager(self.project)
+        self.basemaps = BasemapCatalog(iface)
+        self.field_preflight = FieldPreflightChecker(self.project)
+        self.field_sync = FieldSyncManager(self.project)
+        self.web_map = WebMapExporter(self.project)
+        self.field_package = FieldPackageBuilder(
+            self.archive_export, self.web_map, self.field_sync,
+            self.field_preflight, self.basemaps,
+        )
         self.parcels = ParcelManager()
         self.well_search = WellSearchManager()
         self.well_cards = WellCardManager()
@@ -276,11 +289,22 @@ class ImportController:
         return result
 
     def analyze_field_package(self, point_layer_id, polygon_layer_id):
-        """Возвращает результаты мастера проверки проекта перед выездом."""
+        """Проверяет слои, интернет-источники и все обнаруженные внешние файлы проекта."""
         point_layer = self.layer_by_id(point_layer_id)
         polygon_layer = self.layer_by_id(polygon_layer_id)
         self._validate_layers(point_layer, polygon_layer, require_editable=False)
-        return self.archive_export.analyze_field_package(point_layer, polygon_layer)
+        report = self.archive_export.analyze_field_package(point_layer, polygon_layer)
+        preflight = self.field_preflight.run()
+        report.setdefault("checks", []).extend(preflight.get("issues", []))
+        report["preflight"] = preflight
+        report["severity_counts"] = Severity.counts(
+            item.get("severity") for item in report.get("checks", [])
+        )
+        report["highest_severity"] = (
+            Severity.max(*(item.get("severity") for item in report.get("checks", [])))
+            if report.get("checks") else Severity.INFO
+        )
+        return report
 
     def export_field_package(self, point_layer_id, polygon_layer_id, output_path, selected_only=False,
                              store_styles=True, create_project=True, relative_paths=True,
@@ -288,7 +312,7 @@ class ImportController:
         point_layer = self.layer_by_id(point_layer_id)
         polygon_layer = self.layer_by_id(polygon_layer_id)
         self._validate_layers(point_layer, polygon_layer, require_editable=False)
-        result = self.archive_export.export_field_package(
+        result = self.field_package.build(
             point_layer, polygon_layer, output_path,
             selected_only=selected_only,
             store_styles=store_styles,
@@ -298,8 +322,32 @@ class ImportController:
             preparation_report=preparation_report,
         )
         self.logger.write(
-            f"Выездной экспорт: точек {result['points']}, кругов {result['circles']}, "
-            f"стилей в GPKG {result.get('styles_stored', 0)}, GeoPackage: {result['gpkg_path']}"
+            f"Выездной ZIP: точек {result['points']}, кругов {result['circles']}, "
+            f"файл: {result['zip_path']}"
+        )
+        return result
+
+    def compare_field_return(self, point_layer_id, polygon_layer_id, package_path):
+        """Сравнивает офисную и выездную версии и возвращает только полевые изменения."""
+        point_layer = self.layer_by_id(point_layer_id)
+        polygon_layer = self.layer_by_id(polygon_layer_id)
+        self._validate_layers(point_layer, polygon_layer, require_editable=False)
+        return self.field_sync.compare_package(package_path, point_layer, polygon_layer)
+
+    def apply_field_return(self, point_layer_id, polygon_layer_id, package_path, changes):
+        """Применяет подтверждённые пользователем изменения после выезда."""
+        point_layer = self.layer_by_id(point_layer_id)
+        polygon_layer = self.layer_by_id(polygon_layer_id)
+        result = self.field_sync.apply_changes(
+            package_path, point_layer, polygon_layer, changes
+        )
+        self._refresh_layer(point_layer)
+        self._refresh_layer(polygon_layer)
+        self.iface.mapCanvas().refresh()
+        self.logger.write(
+            f"Обратная синхронизация: применено {result.get('applied', 0)}, "
+            f"добавлено {result.get('added', 0)}, изменено {result.get('modified', 0)}, "
+            f"удалено {result.get('deleted', 0)}"
         )
         return result
 

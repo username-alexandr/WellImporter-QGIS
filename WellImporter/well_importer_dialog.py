@@ -11,6 +11,8 @@ from .archive_dialog import ArchiveDialog
 from .coordinate_checker import CoordinateChecker
 from .duplicate_checker import DuplicateChecker
 from .field_export_wizard import FieldExportWizard
+from .field_sync import FieldSyncDialog
+from .basemap_dialog import BasemapCatalogDialog
 from .history_dialog import HistoryDialog
 from .importer import ClipboardImporter, ExcelFileImporter
 from .preview_dialog import PreviewDialog
@@ -405,11 +407,11 @@ class WellImporterDialog(QtWidgets.QDialog):
             preparation_report["field_scope"] = scope_result.get("scope", {})
             preparation_report["cadastral"] = scope_result.get("cadastral", {})
 
-            default_name = f"WellImporter_Field_{datetime.now().strftime('%Y%m%d_%H%M')}.gpkg"
+            default_name = f"WellImporter_Field_{datetime.now().strftime('%Y%m%d_%H%M')}.zip"
             file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
                 self, "Сохранить выездной комплект",
                 str(Path(self._default_output_dir()) / default_name),
-                "GeoPackage (*.gpkg)",
+                "ZIP архив выезда (*.zip)",
             )
             if not file_path:
                 return
@@ -433,7 +435,9 @@ class WellImporterDialog(QtWidgets.QDialog):
                 f"Режим территории: {scope_result.get('scope', {}).get('mode', 'all')}\n"
                 f"Кадастровых номеров подготовлено: {scope_result.get('cadastral', {}).get('cadastral_found', 0)}\n"
                 f"Стилей сохранено внутри GeoPackage: {result.get('styles_stored', 0)}\n\n"
-                f"GeoPackage: {result['gpkg_path']}\n"
+                f"ZIP-архив: {result['zip_path']}\n"
+                f"GeoPackage внутри архива: {result['gpkg_path']}\n"
+                f"Интерактивная веб-карта: {result.get('web_map_path', '—')}\n"
                 f"QGIS-проект: {project_line}\n"
                 f"Памятка: {readme_line}"
             )
@@ -442,6 +446,80 @@ class WellImporterDialog(QtWidgets.QDialog):
             self.append_log(message)
             self.set_status("Выездной комплект создан.")
             QtWidgets.QMessageBox.information(self, "Экспорт для выезда", message)
+        except Exception as exc:
+            self._show_error(exc)
+
+    def import_field_results(self):
+        """Сравнивает офисную/выездную версии и применяет только подтверждённые изменения."""
+        try:
+            point_id, polygon_id = self._target_ids()
+            package_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+                self, "Выберите пакет после выезда", self._default_output_dir(),
+                "Выездной пакет (*.zip *.gpkg);;ZIP (*.zip);;GeoPackage (*.gpkg)"
+            )
+            if not package_path:
+                return
+            self.set_status("Сравнение офисной и выездной версий...")
+            comparison = self.controller.compare_field_return(
+                point_id, polygon_id, package_path
+            )
+            if not comparison.get("changes"):
+                QtWidgets.QMessageBox.information(
+                    self, "Обратная синхронизация",
+                    "В выездной версии нет изменений относительно исходного пакета."
+                )
+                self.set_status("Изменений после выезда нет.")
+                return
+            dialog = FieldSyncDialog(comparison, self)
+            if dialog.exec_() != QtWidgets.QDialog.Accepted:
+                self.set_status("Обратная синхронизация отменена.")
+                return
+            changes = dialog.selected_changes()
+            if not changes:
+                QtWidgets.QMessageBox.information(
+                    self, "Обратная синхронизация", "Не выбрано ни одного изменения."
+                )
+                return
+            result = self.controller.apply_field_return(
+                point_id, polygon_id, package_path, changes
+            )
+            message = (
+                f"Обратная синхронизация завершена.\n\n"
+                f"Подтверждено и применено: {result.get('applied', 0)}\n"
+                f"Добавлено: {result.get('added', 0)}\n"
+                f"Изменено: {result.get('modified', 0)}\n"
+                f"Удалено: {result.get('deleted', 0)}"
+            )
+            if result.get("left_uncommitted"):
+                message += (
+                    "\n\nЭти слои уже были в режиме редактирования; изменения оставлены "
+                    "в текущей edit-сессии и не зафиксированы автоматически: "
+                    + ", ".join(result["left_uncommitted"])
+                )
+            self.append_log(message)
+            self.set_status("Обратная синхронизация завершена.")
+            QtWidgets.QMessageBox.information(self, "Обратная синхронизация", message)
+            self.refresh_dashboard()
+        except Exception as exc:
+            self._show_error(exc)
+
+    def open_basemap_catalog(self):
+        BasemapCatalogDialog(self.controller.basemaps, self).exec_()
+
+    def check_field_preflight(self):
+        try:
+            point_id, polygon_id = self._target_ids()
+            report = self.controller.analyze_field_package(point_id, polygon_id)
+            preflight = report.get("preflight", {})
+            internet = preflight.get("internet_layers", [])
+            missing = preflight.get("missing_external_files", 0)
+            unavailable = sum(1 for item in internet if not item.get("available"))
+            QtWidgets.QMessageBox.information(
+                self, "Проверка перед выездом",
+                f"Интернет-слоёв проверено: {len(internet)}\n"
+                f"Недоступных интернет-слоёв: {unavailable}\n"
+                f"Отсутствующих внешних файлов: {missing}"
+            )
         except Exception as exc:
             self._show_error(exc)
 
