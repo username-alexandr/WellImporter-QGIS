@@ -330,6 +330,57 @@ class ImportController:
             center_tolerance_m=center_tolerance_m,
         )
 
+    def repair_project(self, point_layer_id, polygon_layer_id, default_year, expected_area_ha=33.0,
+                     point_fields=None, polygon_fields=None, plan=None):
+        """Выполняет выбранный мастером план исправлений и повторный полный аудит."""
+        plan = dict(plan or {})
+        if not any((
+            plan.get("repair_points"),
+            plan.get("repair_circles"),
+            plan.get("sync_circle_attributes"),
+        )):
+            raise Exception("Не выбрана ни одна операция исправления.")
+
+        before = self.full_project_audit(
+            point_layer_id, polygon_layer_id, expected_area_ha,
+            point_fields, polygon_fields,
+        )
+        operations = {}
+
+        # Сначала восстанавливаем точки: последующее исправление кругов
+        # уже использует дополненные пары точка/круг.
+        if plan.get("repair_points"):
+            operations["points"] = self.repair_points(
+                point_layer_id, polygon_layer_id, default_year
+            )
+
+        if plan.get("repair_circles"):
+            operations["circles"] = self.repair_circles(
+                point_layer_id, polygon_layer_id, expected_area_ha,
+                repair_area=bool(plan.get("repair_area", True)),
+                repair_center=bool(plan.get("repair_center", True)),
+            )
+
+        if plan.get("sync_circle_attributes"):
+            operations["circle_attributes"] = self.sync_circle_attributes(
+                point_layer_id, polygon_layer_id, expected_area_ha
+            )
+
+        after = self.full_project_audit(
+            point_layer_id, polygon_layer_id, expected_area_ha,
+            point_fields, polygon_fields,
+        )
+        self.logger.write(
+            f"Мастер исправления: проблем до {before.get('total', 0)}, "
+            f"после {after.get('total', 0)}"
+        )
+        return {
+            "before": before,
+            "after": after,
+            "operations": operations,
+            "fixed": max(0, int(before.get("total", 0)) - int(after.get("total", 0))),
+        }
+
     def repair_circles(self, point_layer_id, polygon_layer_id, expected_area_ha=33.0,
                        repair_area=True, repair_center=True,
                        area_tolerance_pct=2.0, center_tolerance_m=5.0):

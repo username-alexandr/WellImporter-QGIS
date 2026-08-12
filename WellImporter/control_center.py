@@ -9,6 +9,7 @@ from qgis.core import QgsMapLayerType, QgsProject, QgsWkbTypes
 from .history_dialog import HistoryDialog
 from .severity import Severity
 from .well_number_field import feature_well_number
+from .repair_wizard import RepairWizard
 
 
 class ControlCenterDialog(QtWidgets.QDialog):
@@ -199,27 +200,19 @@ class ControlCenterDialog(QtWidgets.QDialog):
         form.addRow("Поля кругов:", self.txtRequiredPolygons)
         v.addWidget(required)
 
-        circles = QtWidgets.QGroupBox("Автоматическое исправление объектов")
-        c = QtWidgets.QGridLayout(circles)
-        self.chkRepairArea = QtWidgets.QCheckBox("Перестроить круги с неправильной площадью")
-        self.chkRepairArea.setChecked(True)
-        self.chkRepairCenter = QtWidgets.QCheckBox("Центрировать круги по точкам скважин")
-        self.chkRepairCenter.setChecked(True)
-        c.addWidget(self.chkRepairArea, 0, 0, 1, 2)
-        c.addWidget(self.chkRepairCenter, 1, 0, 1, 2)
-        btnRepairCircles = QtWidgets.QPushButton("Исправить площадные круги")
-        btnRepairPoints = QtWidgets.QPushButton("Исправить точки бурения")
-        btnSyncAttrs = QtWidgets.QPushButton("Синхронизировать атрибуты кругов")
-
-        btnRepairCircles.clicked.connect(self.repair_circles)
-        btnRepairPoints.clicked.connect(self.repair_points)
-        btnSyncAttrs.clicked.connect(self.sync_circle_attributes)
-
-        # Исправления остаются отдельными операциями и не запускаются самим аудитом.
-        c.addWidget(btnRepairCircles, 2, 0)
-        c.addWidget(btnRepairPoints, 2, 1)
-        c.addWidget(btnSyncAttrs, 3, 0, 1, 2)
-        v.addWidget(circles)
+        repair_box = QtWidgets.QGroupBox("Исправление ошибок")
+        repair_layout = QtWidgets.QVBoxLayout(repair_box)
+        repair_note = QtWidgets.QLabel(
+            "Мастер использует результат полного аудита, предлагает безопасные операции, "
+            "запрашивает подтверждение и после исправления повторяет аудит проекта."
+        )
+        repair_note.setWordWrap(True)
+        repair_layout.addWidget(repair_note)
+        self.btnRepairWizard = QtWidgets.QPushButton("Мастер исправления ошибок")
+        self.btnRepairWizard.setMinimumHeight(40)
+        self.btnRepairWizard.clicked.connect(self.open_repair_wizard)
+        repair_layout.addWidget(self.btnRepairWizard)
+        v.addWidget(repair_box)
 
         self.txtQuality = QtWidgets.QPlainTextEdit()
         self.txtQuality.setReadOnly(True)
@@ -442,6 +435,65 @@ class ControlCenterDialog(QtWidgets.QDialog):
 
             self.txtQuality.setPlainText("\n".join(lines))
             self.refresh_overview()
+        except Exception as exc:
+            self._error(exc)
+
+    def open_repair_wizard(self):
+        """Запускает аудит, мастер исправления и повторный контроль после изменений."""
+        try:
+            point_id, polygon_id = self._target_ids()
+            point_fields, polygon_fields = self._required_fields()
+            audit = self.controller.full_project_audit(
+                point_id, polygon_id, self.main.ui.spinArea.value(),
+                point_fields, polygon_fields,
+            )
+            if not audit.get("total", 0):
+                QtWidgets.QMessageBox.information(
+                    self, "Мастер исправления ошибок",
+                    "Полный аудит не обнаружил проблем, требующих исправления."
+                )
+                self.txtQuality.setPlainText("Полный аудит: проблем не обнаружено.")
+                return
+
+            wizard = RepairWizard(audit, self)
+            if wizard.exec_() != QtWidgets.QDialog.Accepted:
+                return
+
+            result = self.controller.repair_project(
+                point_id, polygon_id,
+                self.main.ui.spinYear.value(),
+                self.main.ui.spinArea.value(),
+                point_fields, polygon_fields,
+                wizard.plan(),
+            )
+            before = result.get("before", {})
+            after = result.get("after", {})
+            before_counts = before.get("severity_counts", {})
+            after_counts = after.get("severity_counts", {})
+            lines = [
+                "Мастер исправления завершён.",
+                "",
+                f"Проблем до: {before.get('total', 0)}",
+                f"Проблем после: {after.get('total', 0)}",
+                f"Устранено по повторному аудиту: {result.get('fixed', 0)}",
+                "",
+                "До исправления: "
+                f"критических {before_counts.get(Severity.CRITICAL, 0)}, "
+                f"ошибок {before_counts.get(Severity.ERROR, 0)}, "
+                f"предупреждений {before_counts.get(Severity.WARNING, 0)}",
+                "После исправления: "
+                f"критических {after_counts.get(Severity.CRITICAL, 0)}, "
+                f"ошибок {after_counts.get(Severity.ERROR, 0)}, "
+                f"предупреждений {after_counts.get(Severity.WARNING, 0)}",
+            ]
+            if after.get("total", 0):
+                lines.append("Оставшиеся проблемы будут доступны для дальнейшего анализа.")
+            self.txtQuality.setPlainText("\n".join(lines))
+            self.main.refresh_dashboard()
+            self.refresh_overview()
+            QtWidgets.QMessageBox.information(
+                self, "Мастер исправления ошибок", "\n".join(lines)
+            )
         except Exception as exc:
             self._error(exc)
 
