@@ -379,6 +379,10 @@ class WellImporterDialog(QtWidgets.QDialog):
         try:
             point_id, polygon_id = self._target_ids()
             point_layer = self.controller.layer_by_id(point_id)
+            parcel_source = self.controller.detect_parcel_source(
+                polygon_id, require_cadastral=True
+            )
+            parcel_layer = QgsProject.instance().mapLayer(parcel_source.get("layer_id"))
             self.set_status("Проверка готовности проекта к выезду...")
             preparation_report = self.controller.analyze_field_package(point_id, polygon_id)
 
@@ -386,11 +390,20 @@ class WellImporterDialog(QtWidgets.QDialog):
                 preparation_report,
                 selected_count=point_layer.selectedFeatureCount(),
                 parent=self,
+                iface=self.iface,
+                point_layer=point_layer,
+                parcel_layer=parcel_layer,
             )
             if wizard.exec_() != QtWidgets.QDialog.Accepted:
                 self.set_status("Подготовка выездного комплекта отменена.")
                 return
             options = wizard.options()
+            self.set_status("Подготовка выбранной территории и кадастровых номеров...")
+            scope_result = self.controller.prepare_field_scope(
+                point_id, polygon_id, options["scope_mode"]
+            )
+            preparation_report["field_scope"] = scope_result.get("scope", {})
+            preparation_report["cadastral"] = scope_result.get("cadastral", {})
 
             default_name = f"WellImporter_Field_{datetime.now().strftime('%Y%m%d_%H%M')}.gpkg"
             file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
@@ -404,7 +417,7 @@ class WellImporterDialog(QtWidgets.QDialog):
             self.set_status("Создание выездного комплекта...")
             result = self.controller.export_field_package(
                 point_id, polygon_id, file_path,
-                selected_only=options["selected_only"],
+                selected_only=bool(scope_result.get("scope", {}).get("selected_only")),
                 store_styles=options["store_styles"],
                 create_project=options["create_project"],
                 relative_paths=options["relative_paths"],
@@ -417,6 +430,8 @@ class WellImporterDialog(QtWidgets.QDialog):
                 f"Выездной комплект создан.\n\n"
                 f"Скважин: {result['points']}\n"
                 f"Площадных кругов: {result['circles']}\n"
+                f"Режим территории: {scope_result.get('scope', {}).get('mode', 'all')}\n"
+                f"Кадастровых номеров подготовлено: {scope_result.get('cadastral', {}).get('cadastral_found', 0)}\n"
                 f"Стилей сохранено внутри GeoPackage: {result.get('styles_stored', 0)}\n\n"
                 f"GeoPackage: {result['gpkg_path']}\n"
                 f"QGIS-проект: {project_line}\n"

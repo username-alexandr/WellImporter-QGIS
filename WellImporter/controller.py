@@ -25,6 +25,7 @@ from .pair_integrity import PairIntegrityChecker
 from .pair_number_checker import PairNumberConsistencyChecker
 from .well_number_validator import WellNumberFormatChecker
 from .statistics_panel import StatisticsManager
+from .field_scope import FieldScopeManager
 from .parcel_tools import ParcelManager
 from .well_search import WellSearchManager
 from .well_card import WellCardManager
@@ -85,6 +86,7 @@ class ImportController:
         self.pair_number_consistency = PairNumberConsistencyChecker()
         self.number_format = WellNumberFormatChecker()
         self.statistics = StatisticsManager()
+        self.field_scope = FieldScopeManager(self.project)
         self.parcels = ParcelManager()
         self.well_search = WellSearchManager()
         self.well_cards = WellCardManager()
@@ -507,16 +509,44 @@ class ImportController:
         )
         return result
 
-    def detect_parcel_source(self, polygon_layer_id=None):
+    def detect_parcel_source(self, polygon_layer_id=None, require_cadastral=False):
         """Автоматически определяет слой земельных участков и подходящие поля."""
         excluded = [polygon_layer_id] if polygon_layer_id else []
-        source = self.parcels.detect_source(excluded)
+        source = self.parcels.detect_source(excluded, require_cadastral=require_cadastral)
         return {
             "layer_id": source.get("layer_id", ""),
             "layer_name": source.get("layer_name", ""),
             "label_field": source.get("label_field", ""),
             "cadastral_field": source.get("cadastral_field", ""),
             "score": source.get("score", 0),
+        }
+
+    def prepare_field_scope(self, point_layer_id, polygon_layer_id, mode):
+        """Готовит территорию выезда и автоматически добавляет участок/кадастровый номер."""
+        point_layer = self.layer_by_id(point_layer_id)
+        source = self.parcels.detect_source(
+            [polygon_layer_id], require_cadastral=True
+        )
+        parcel_layer = source["layer"]
+        scope = self.field_scope.prepare(mode, point_layer, parcel_layer)
+
+        cadastral = self.parcels.assign_auto(
+            point_layer,
+            excluded_layer_ids=[polygon_layer_id],
+            selected_only=bool(scope.get("selected_only")),
+        )
+        self._refresh_layer(point_layer)
+        self.iface.mapCanvas().refresh()
+        self.logger.write(
+            f"Территория выезда: режим {scope.get('mode')}, "
+            f"скважин {scope.get('selected_wells', 0)}, "
+            f"кадастровых номеров {cadastral.get('cadastral_found', 0)}"
+        )
+        return {
+            "scope": scope,
+            "cadastral": cadastral,
+            "parcel_layer_id": parcel_layer.id(),
+            "parcel_layer_name": parcel_layer.name(),
         }
 
     def assign_parcel_names_auto(self, point_layer_id, polygon_layer_id=None, selected_only=False):
