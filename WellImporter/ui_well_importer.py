@@ -122,7 +122,7 @@ class Ui_WellImporterDialog(object):
             "3. Предпросмотр покажет интеллектуальные дубли и оценит замечания по уровням серьёзности.\n"
             "4. После подтверждения точки и круги сохранятся в выбранные слои. Площадь задаётся в гектарах: 33 = 33 га = 330 000 м².\n"
             "5. После импорта автоматически проверяются площадь круга и положение его центра. История и отмена доступны отдельными кнопками ниже.\n"
-            "6. Центр управления объединяет контроль обязательных атрибутов, исправление кругов, земельные участки, поиск, карточки, архив, выезд и отчётность. Файл можно перетащить мышью в окно."
+            "6. Центр управления содержит единый «Полный аудит проекта», исправление объектов, земельные участки, поиск, карточки, архив, выезд и отчётность. Файл можно перетащить мышью в окно."
         )
         self.instructionLayout.addWidget(self.lblInstruction)
         self.verticalLayout.addWidget(self.grpInstruction)
@@ -281,14 +281,12 @@ class Ui_WellImporterDialog(object):
         self.managementLayout = QtWidgets.QGridLayout()
         self.btnHistory = QtWidgets.QPushButton("История импортов")
         self.btnUndo = QtWidgets.QPushButton("Отменить последний импорт")
-        self.btnValidate = QtWidgets.QPushButton("Проверить круги")
         self.btnArchive = QtWidgets.QPushButton("Архивировать старые импорты")
         self.btnExportField = QtWidgets.QPushButton("Мастер экспорта для выезда")
         self.btnSearchWell = QtWidgets.QPushButton("Найти скважину")
         self.btnControlCenter = QtWidgets.QPushButton("Центр управления")
-        self.managementLayout.addWidget(self.btnHistory, 0, 0)
-        self.managementLayout.addWidget(self.btnUndo, 0, 1)
-        self.managementLayout.addWidget(self.btnValidate, 0, 2)
+        self.managementLayout.addWidget(self.btnHistory, 0, 0, 1, 2)
+        self.managementLayout.addWidget(self.btnUndo, 0, 2)
         self.managementLayout.addWidget(self.btnArchive, 1, 0, 1, 2)
         self.managementLayout.addWidget(self.btnExportField, 1, 2)
         self.managementLayout.addWidget(self.btnSearchWell, 2, 0, 1, 1)

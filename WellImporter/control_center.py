@@ -9,6 +9,9 @@ from qgis.core import QgsMapLayerType, QgsProject, QgsWkbTypes
 from .history_dialog import HistoryDialog
 from .severity import Severity
 from .well_number_field import feature_well_number
+from .repair_wizard import RepairWizard
+from .audit_issue_list import AuditIssueList
+from .statistics_panel import InteractiveBarChart
 
 
 class ControlCenterDialog(QtWidgets.QDialog):
@@ -20,12 +23,14 @@ class ControlCenterDialog(QtWidgets.QDialog):
         self.controller = main_dialog.controller
         self.settings = main_dialog.settings
         self.current_search_results = []
+        self.last_audit_report = None
         self.setWindowTitle("Центр управления Well Importer")
         self.setMinimumSize(560, 420)
         self._resize_to_available_screen()
         self._build_ui()
         self.refresh_layers()
         self.refresh_overview()
+        self.refresh_statistics()
 
     def _resize_to_available_screen(self):
         """Подбирает размер окна под доступную область экрана."""
@@ -66,6 +71,7 @@ class ControlCenterDialog(QtWidgets.QDialog):
         layout.addWidget(self.tabs, 1)
         self._build_import_tab()
         self._build_overview_tab()
+        self._build_statistics_tab()
         self._build_quality_tab()
         self._build_parcel_tab()
         self._build_search_tab()
@@ -169,71 +175,151 @@ class ControlCenterDialog(QtWidgets.QDialog):
         v.addLayout(row)
         self._add_scroll_tab(tab, "Обзор")
 
+    def _build_statistics_tab(self):
+        tab = QtWidgets.QWidget()
+        v = QtWidgets.QVBoxLayout(tab)
+
+        note = QtWidgets.QLabel(
+            "Интерактивная статистика по рабочему слою скважин. Нажмите на столбец диаграммы, "
+            "чтобы выделить соответствующие скважины и приблизить их на карте."
+        )
+        note.setWordWrap(True)
+        v.addWidget(note)
+
+        top = QtWidgets.QHBoxLayout()
+        self.lblStatisticsTotal = QtWidgets.QLabel("Скважин: —")
+        top.addWidget(self.lblStatisticsTotal)
+        top.addStretch(1)
+        btnRefresh = QtWidgets.QPushButton("Обновить статистику")
+        btnRefresh.clicked.connect(self.refresh_statistics)
+        top.addWidget(btnRefresh)
+        v.addLayout(top)
+
+        grid = QtWidgets.QGridLayout()
+        self.chartYear = InteractiveBarChart("Скважины по годам")
+        self.chartParcel = InteractiveBarChart("Скважины по участкам")
+        self.chartStatus = InteractiveBarChart("Скважины по состояниям")
+        self.chartBatch = InteractiveBarChart("Скважины по партиям")
+        self.chartYear.barClicked.connect(lambda value: self.show_statistics_category("year", value))
+        self.chartParcel.barClicked.connect(lambda value: self.show_statistics_category("parcel", value))
+        self.chartStatus.barClicked.connect(lambda value: self.show_statistics_category("status", value))
+        self.chartBatch.barClicked.connect(lambda value: self.show_statistics_category("batch", value))
+        grid.addWidget(self.chartYear, 0, 0)
+        grid.addWidget(self.chartParcel, 0, 1)
+        grid.addWidget(self.chartStatus, 1, 0)
+        grid.addWidget(self.chartBatch, 1, 1)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        v.addLayout(grid, 1)
+
+        state_note = QtWidgets.QLabel(
+            "Поле «Состояние» создаётся автоматически. Допустимые значения: «Пробурена» и «Не заполнено». "
+            "Новые импортированные скважины получают состояние «Пробурена»."
+        )
+        state_note.setWordWrap(True)
+        v.addWidget(state_note)
+        self._add_scroll_tab(tab, "Статистика")
+
     def _build_quality_tab(self):
         tab = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(tab)
 
-        required = QtWidgets.QGroupBox("Обязательные атрибуты")
+        audit_box = QtWidgets.QGroupBox("Полный аудит проекта")
+        audit_layout = QtWidgets.QVBoxLayout(audit_box)
+        audit_note = QtWidgets.QLabel(
+            "Одна проверка анализирует обязательные атрибуты, наличие пар точка/круг, "
+            "площадь и центрирование площадных кругов. Аудит ничего не изменяет в слоях."
+        )
+        audit_note.setWordWrap(True)
+        audit_layout.addWidget(audit_note)
+        self.btnFullAudit = QtWidgets.QPushButton("Полный аудит проекта")
+        self.btnFullAudit.setMinimumHeight(42)
+        font = self.btnFullAudit.font()
+        font.setBold(True)
+        self.btnFullAudit.setFont(font)
+        self.btnFullAudit.clicked.connect(self.full_project_audit)
+        audit_layout.addWidget(self.btnFullAudit)
+        v.addWidget(audit_box)
+
+        required = QtWidgets.QGroupBox("Параметры обязательных атрибутов")
         form = QtWidgets.QFormLayout(required)
         self.txtRequiredPoints = QtWidgets.QLineEdit(", ".join(self.settings.required_point_fields()))
         self.txtRequiredPolygons = QtWidgets.QLineEdit(", ".join(self.settings.required_polygon_fields()))
         form.addRow("Поля скважин:", self.txtRequiredPoints)
         form.addRow("Поля кругов:", self.txtRequiredPolygons)
-        btnAttrs = QtWidgets.QPushButton("Проверить обязательные атрибуты")
-        btnAttrs.clicked.connect(self.check_attributes)
-        form.addRow(btnAttrs)
         v.addWidget(required)
 
-        circles = QtWidgets.QGroupBox("Автоматическое исправление объектов")
-        c = QtWidgets.QGridLayout(circles)
-        self.chkRepairArea = QtWidgets.QCheckBox("Перестроить круги с неправильной площадью")
-        self.chkRepairArea.setChecked(True)
-        self.chkRepairCenter = QtWidgets.QCheckBox("Центрировать круги по точкам скважин")
-        self.chkRepairCenter.setChecked(True)
-        c.addWidget(self.chkRepairArea, 0, 0, 1, 2)
-        c.addWidget(self.chkRepairCenter, 1, 0, 1, 2)
-        btnValidate = QtWidgets.QPushButton("Проверить все круги")
-        btnRepairCircles = QtWidgets.QPushButton("Исправить площадные круги")
-        btnRepairPoints = QtWidgets.QPushButton("Исправить точки бурения")
-        btnSyncAttrs = QtWidgets.QPushButton("Синхронизировать атрибуты кругов")
-
-        btnValidate.clicked.connect(self.validate_all)
-        btnRepairCircles.clicked.connect(self.repair_circles)
-        btnRepairPoints.clicked.connect(self.repair_points)
-        btnSyncAttrs.clicked.connect(self.sync_circle_attributes)
-
-        # Две отдельные основные кнопки исправления.
-        c.addWidget(btnRepairCircles, 2, 0)
-        c.addWidget(btnRepairPoints, 2, 1)
-        c.addWidget(btnValidate, 3, 0)
-        c.addWidget(btnSyncAttrs, 3, 1)
-        v.addWidget(circles)
+        repair_box = QtWidgets.QGroupBox("Исправление ошибок")
+        repair_layout = QtWidgets.QVBoxLayout(repair_box)
+        repair_note = QtWidgets.QLabel(
+            "Мастер использует результат полного аудита, предлагает безопасные операции, "
+            "запрашивает подтверждение и после исправления повторяет аудит проекта."
+        )
+        repair_note.setWordWrap(True)
+        repair_layout.addWidget(repair_note)
+        self.btnRepairWizard = QtWidgets.QPushButton("Мастер исправления ошибок")
+        self.btnRepairWizard.setMinimumHeight(40)
+        self.btnRepairWizard.clicked.connect(self.open_repair_wizard)
+        repair_layout.addWidget(self.btnRepairWizard)
+        v.addWidget(repair_box)
 
         self.txtQuality = QtWidgets.QPlainTextEdit()
         self.txtQuality.setReadOnly(True)
-        v.addWidget(self.txtQuality, 1)
+        self.txtQuality.setMaximumHeight(190)
+        self.txtQuality.setPlaceholderText("Результат полного аудита проекта")
+        v.addWidget(self.txtQuality)
+
+        issues_box = QtWidgets.QGroupBox("Интерактивный список ошибок")
+        issues_layout = QtWidgets.QVBoxLayout(issues_box)
+        issues_note = QtWidgets.QLabel(
+            "Фильтруйте найденные проблемы, выбирайте строку и нажимайте «Показать на карте» "
+            "или дважды щёлкните по ошибке для перехода к связанному объекту."
+        )
+        issues_note.setWordWrap(True)
+        issues_layout.addWidget(issues_note)
+        self.auditIssueList = AuditIssueList()
+        self.auditIssueList.issueActivated.connect(self.show_audit_issue_on_map)
+        issues_layout.addWidget(self.auditIssueList, 1)
+        v.addWidget(issues_box, 1)
         self._add_scroll_tab(tab, "Контроль и исправление")
 
     def _build_parcel_tab(self):
         tab = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(tab)
-        form = QtWidgets.QFormLayout()
-        self.cmbParcelLayer = QtWidgets.QComboBox()
-        self.cmbParcelLabelField = QtWidgets.QComboBox()
-        self.cmbCadastralField = QtWidgets.QComboBox()
+
+        title = QtWidgets.QLabel(
+            "<b>Автоматическое определение земельных участков</b><br>"
+            "Well Importer самостоятельно анализирует полигональные слои проекта, "
+            "определяет слой земельных участков и поле его наименования. Ручной выбор не требуется."
+        )
+        title.setWordWrap(True)
+        v.addWidget(title)
+
+        source_box = QtWidgets.QGroupBox("Автоматически найденный источник")
+        source_layout = QtWidgets.QFormLayout(source_box)
+        self.lblParcelLayerAuto = QtWidgets.QLabel("—")
+        self.lblParcelFieldAuto = QtWidgets.QLabel("—")
+        self.lblCadastralFieldAuto = QtWidgets.QLabel("—")
+        self.lblParcelLayerAuto.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.lblParcelFieldAuto.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.lblCadastralFieldAuto.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        source_layout.addRow("Слой участков:", self.lblParcelLayerAuto)
+        source_layout.addRow("Поле участка:", self.lblParcelFieldAuto)
+        source_layout.addRow("Кадастровое поле (обнаружено):", self.lblCadastralFieldAuto)
+        v.addWidget(source_box)
+
         self.chkSelectedOnly = QtWidgets.QCheckBox("Обрабатывать только выделенные скважины")
-        form.addRow("Полигональный слой участков:", self.cmbParcelLayer)
-        form.addRow("Поле наименования участка:", self.cmbParcelLabelField)
-        form.addRow("Поле кадастрового номера:", self.cmbCadastralField)
-        form.addRow("", self.chkSelectedOnly)
-        v.addLayout(form)
-        self.cmbParcelLayer.currentIndexChanged.connect(self.refresh_parcel_fields)
-        btn = QtWidgets.QPushButton("Определить участки и заполнить кадастровые номера")
+        v.addWidget(self.chkSelectedOnly)
+
+        btn = QtWidgets.QPushButton("Автоматически определить участки и кадастровые номера")
+        btn.setMinimumHeight(40)
         btn.clicked.connect(self.assign_parcels)
         v.addWidget(btn)
+
         note = QtWidgets.QLabel(
-            "Результат записывается в служебные поля WI_PARCEL и WI_CAD точечного слоя. "
-            "Для них автоматически задаются псевдонимы «Земельный участок» и «Кадастровый номер»."
+            "Результат записывается в поля WI_PARCEL и WI_CAD с псевдонимами «Земельный участок» "
+            "и «Кадастровый номер». Если точка попадает в несколько полигонов, выбирается участок "
+            "с ближайшим центроидом."
         )
         note.setWordWrap(True)
         v.addWidget(note)
@@ -262,7 +348,7 @@ class ControlCenterDialog(QtWidgets.QDialog):
         self.searchTable.setHorizontalHeaderLabels(["FID", "Номер", "Год", "Земельный участок", "Кадастровый номер"])
         self.searchTable.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.searchTable.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self.searchTable.doubleClicked.connect(self.zoom_selected_search)
+        self.searchTable.doubleClicked.connect(lambda _index: self.zoom_selected_search())
         self.searchTable.horizontalHeader().setStretchLastSection(True)
         v.addWidget(self.searchTable, 1)
 
@@ -289,14 +375,27 @@ class ControlCenterDialog(QtWidgets.QDialog):
         )
         label.setWordWrap(True)
         v.addWidget(label)
+        btnFullWorkflow = QtWidgets.QPushButton("Полный рабочий цикл")
+        btnFullWorkflow.setMinimumHeight(42)
         btnArchive = QtWidgets.QPushButton("Архивировать старые импорты")
         btnField = QtWidgets.QPushButton("Мастер подготовки проекта для выезда")
+        btnReturn = QtWidgets.QPushButton("Импортировать результаты после выезда")
+        btnBasemaps = QtWidgets.QPushButton("Каталог фоновых карт")
+        btnPreflight = QtWidgets.QPushButton("Проверить интернет-слои и внешние файлы")
         btnHistory = QtWidgets.QPushButton("История импортов")
+        btnFullWorkflow.clicked.connect(self.main.run_full_workflow)
         btnArchive.clicked.connect(self.main.archive_old_imports)
         btnField.clicked.connect(self.main.export_for_field)
+        btnReturn.clicked.connect(self.main.import_field_results)
+        btnBasemaps.clicked.connect(self.main.open_basemap_catalog)
+        btnPreflight.clicked.connect(self.main.check_field_preflight)
         btnHistory.clicked.connect(lambda: HistoryDialog(self.controller.history.items(), self).exec_())
+        v.addWidget(btnFullWorkflow)
         v.addWidget(btnArchive)
         v.addWidget(btnField)
+        v.addWidget(btnReturn)
+        v.addWidget(btnBasemaps)
+        v.addWidget(btnPreflight)
         v.addWidget(btnHistory)
         v.addStretch(1)
         self._add_scroll_tab(tab, "Архив и выезд")
@@ -311,43 +410,30 @@ class ControlCenterDialog(QtWidgets.QDialog):
         self.lblReportInfo.setWordWrap(True)
         v.addWidget(self.lblReportInfo)
         btnCsv = QtWidgets.QPushButton("Экспорт полного отчёта контроля в CSV")
+        btnPairCsv = QtWidgets.QPushButton("Экспорт отчёта «1 точка = 1 круг» в CSV")
+        btnHtml = QtWidgets.QPushButton("HTML-карта для руководства (без QGIS)")
         btnCsv.clicked.connect(self.export_attribute_report)
+        btnPairCsv.clicked.connect(self.export_pair_integrity_report)
+        btnHtml.clicked.connect(self.main.export_management_web_map)
         v.addWidget(btnCsv)
+        v.addWidget(btnPairCsv)
+        v.addWidget(btnHtml)
         v.addStretch(1)
         self._add_scroll_tab(tab, "Отчётность")
 
     def refresh_layers(self):
-        current = self.cmbParcelLayer.currentText() if self.cmbParcelLayer.count() else self.settings.parcel_layer_name()
-        self.cmbParcelLayer.clear()
-        self.cmbParcelLayer.addItem("— выберите слой —", None)
-        for layer in QgsProject.instance().mapLayers().values():
-            if layer.type() != QgsMapLayerType.VectorLayer:
-                continue
-            if QgsWkbTypes.geometryType(layer.wkbType()) == QgsWkbTypes.PolygonGeometry:
-                self.cmbParcelLayer.addItem(layer.name(), layer.id())
-        index = self.cmbParcelLayer.findText(current)
-        if index >= 0:
-            self.cmbParcelLayer.setCurrentIndex(index)
-        self.refresh_parcel_fields()
-
-    def refresh_parcel_fields(self):
-        layer_id = self.cmbParcelLayer.currentData()
-        layer = QgsProject.instance().mapLayer(layer_id) if layer_id else None
-        previous_label = self.cmbParcelLabelField.currentText() or self.settings.parcel_label_field()
-        previous_cad = self.cmbCadastralField.currentText() or self.settings.cadastral_field()
-        self.cmbParcelLabelField.clear()
-        self.cmbCadastralField.clear()
-        self.cmbParcelLabelField.addItem("— FID / кадастровый номер —", "")
-        if layer:
-            for field in layer.fields():
-                self.cmbParcelLabelField.addItem(field.name(), field.name())
-                self.cmbCadastralField.addItem(field.name(), field.name())
-        idx = self.cmbParcelLabelField.findText(previous_label)
-        if idx >= 0:
-            self.cmbParcelLabelField.setCurrentIndex(idx)
-        idx = self.cmbCadastralField.findText(previous_cad)
-        if idx >= 0:
-            self.cmbCadastralField.setCurrentIndex(idx)
+        """Обновляет сведения об автоматически выбранном слое участков."""
+        try:
+            _, polygon_id = self._target_ids()
+            source = self.controller.detect_parcel_source(polygon_id)
+            self.lblParcelLayerAuto.setText(source.get("layer_name", "—") or "—")
+            self.lblParcelFieldAuto.setText(source.get("label_field", "—") or "—")
+            self.lblCadastralFieldAuto.setText(source.get("cadastral_field", "—") or "—")
+        except Exception as exc:
+            self.lblParcelLayerAuto.setText("Не найден")
+            self.lblParcelFieldAuto.setText("—")
+            self.lblCadastralFieldAuto.setText("—")
+            self.txtParcels.setPlainText(str(exc))
 
     def _target_ids(self):
         return self.main._target_ids()
@@ -372,9 +458,13 @@ class ControlCenterDialog(QtWidgets.QDialog):
             self._set_metric(self.lblImports, "Импорты", status["imports"])
             self.lblLatest.setText(f"Последний импорт: {status.get('latest_import', '—')}")
             self.txtOverview.setPlainText(
+                f"Проблем по полному аудиту: {status.get('audit', {}).get('total', 0)}\n"
                 f"Критических проблем: {status.get('critical', 0)}\n"
                 f"Проблем обязательных атрибутов: {status['attributes'].get('total', 0)}\n"
                 f"Проверено пар точка/круг: {status['quality'].get('total', 0)}\n"
+                f"Нарушений правила 1 точка = 1 круг: {status.get('audit', {}).get('pair_integrity', {}).get('violations', 0)}\n"
+                f"Критических несовпадений номера точка/круг: {status.get('audit', {}).get('number_consistency', {}).get('mismatches', 0)}\n"
+                f"Неверных форматов номера: {status.get('audit', {}).get('number_format', {}).get('invalid', 0)}\n"
                 f"Кругов без замечаний: {status['quality'].get('ok', 0)}"
             )
         except Exception as exc:
@@ -383,42 +473,232 @@ class ControlCenterDialog(QtWidgets.QDialog):
     def _set_metric(self, label, title, value):
         label.setText(f"<b>{title}</b><br><span style='font-size:22px'>{value}</span>")
 
-    def check_attributes(self):
+    def refresh_statistics(self):
+        """Обновляет четыре интерактивные диаграммы статистики."""
+        try:
+            point_id, _ = self._target_ids()
+            stats = self.controller.project_statistics(point_id)
+            self.lblStatisticsTotal.setText(f"Скважин: {stats.get('total', 0)}")
+            self.chartYear.set_data(stats.get("year", []))
+            self.chartParcel.set_data(stats.get("parcel", []))
+            self.chartStatus.set_data(stats.get("status", []))
+            self.chartBatch.set_data(stats.get("batch", []))
+        except Exception as exc:
+            self.lblStatisticsTotal.setText(f"Статистика недоступна: {exc}")
+            for chart in (self.chartYear, self.chartParcel, self.chartStatus, self.chartBatch):
+                chart.set_data([])
+
+    def show_statistics_category(self, dimension, value):
+        """Выделяет на карте объекты, соответствующие выбранному столбцу диаграммы."""
+        try:
+            point_id, _ = self._target_ids()
+            layer = self.controller.layer_by_id(point_id)
+            ids = self.controller.statistics_feature_ids(point_id, dimension, value)
+            layer.removeSelection()
+            if not ids:
+                return
+            layer.selectByIds(ids)
+            self.main.iface.setActiveLayer(layer)
+            canvas = self.main.iface.mapCanvas()
+            if hasattr(canvas, "zoomToSelected"):
+                canvas.zoomToSelected(layer)
+            else:
+                self.main.iface.actionZoomToSelected().trigger()
+            canvas.refresh()
+        except Exception as exc:
+            self._error(exc)
+
+    def full_project_audit(self):
+        """Запускает единственную пользовательскую команду аудита всего проекта."""
         try:
             point_id, polygon_id = self._target_ids()
             point_fields, polygon_fields = self._required_fields()
-            report = self.controller.check_required_attributes(point_id, polygon_id, point_fields, polygon_fields)
+            report = self.controller.full_project_audit(
+                point_id,
+                polygon_id,
+                self.main.ui.spinArea.value(),
+                point_fields,
+                polygon_fields,
+            )
+            self.last_audit_report = report
             counts = report.get("severity_counts", {})
+            checked = report.get("checked", {})
+            pair_report = report.get("pair_integrity", {})
+            number_report = report.get("number_consistency", {})
+            number_format = report.get("number_format", {})
+
             lines = [
-                f"Найдено проблем: {report.get('total', 0)}",
+                "ПОЛНЫЙ АУДИТ ПРОЕКТА",
+                "=" * 24,
+                f"Проверено скважин: {checked.get('points', 0)}",
+                f"Проверено площадных кругов: {checked.get('circles', 0)}",
+                f"Проверено пар точка/круг: {checked.get('pairs', 0)}",
+                f"Кругов без замечаний: {checked.get('circles_ok', 0)}",
+                "",
+                "ОТЧЁТ «1 ТОЧКА = 1 КРУГ»",
+                f"Проверено номеров: {pair_report.get('numbers_checked', 0)}",
+                f"Корректных пар: {pair_report.get('ok', 0)}",
+                f"Нарушений 1:1: {pair_report.get('violations', 0)}",
+                f"Точек без круга: {pair_report.get('missing_circles', 0)}",
+                f"Кругов без точки: {pair_report.get('missing_points', 0)}",
+                f"Дублирующихся точек: {pair_report.get('duplicate_points', 0)}",
+                f"Дублирующихся кругов: {pair_report.get('duplicate_circles', 0)}",
+                "",
+                "КОНТРОЛЬ НОМЕРОВ ТОЧКА ↔ КРУГ",
+                f"Геометрически проверено пар: {number_report.get('checked', 0)}",
+                f"Критических несовпадений номеров: {number_report.get('mismatches', 0)}",
+                f"Не удалось однозначно сопоставить: {number_report.get('unresolved', 0)}",
+                "",
+                "ФОРМАТ НОМЕРА СКВАЖИНЫ",
+                f"Проверено заполненных номеров: {number_format.get('checked', 0)}",
+                f"Номеров с неверными символами: {number_format.get('invalid', 0)}",
+                "Разрешённый формат: только цифры 0-9.",
+                "",
+                f"Всего проблем: {report.get('total', 0)}",
                 f"Критических: {counts.get(Severity.CRITICAL, 0)}",
                 f"Ошибок: {counts.get(Severity.ERROR, 0)}",
                 f"Предупреждений: {counts.get(Severity.WARNING, 0)}",
             ]
-            for issue in report.get("issues", [])[:30]:
-                lines.append(f"[{Severity.label(issue['severity'])}] {issue['layer_name']} / №{issue['number']}: {issue['message']}")
+
+            issues = report.get("issues", [])
+            if issues:
+                lines.append("\nПервые найденные проблемы:")
+                for issue in issues[:50]:
+                    number = issue.get("number", "") or "—"
+                    lines.append(
+                        f"[{Severity.label(issue.get('severity'))}] "
+                        f"{issue.get('category', '')} / №{number}: "
+                        f"{issue.get('message', '')}"
+                    )
+            else:
+                lines.append("\nПроблем не обнаружено.")
+
             self.txtQuality.setPlainText("\n".join(lines))
+            self.auditIssueList.set_report(report)
             self.refresh_overview()
         except Exception as exc:
             self._error(exc)
 
-    def validate_all(self):
+    def show_audit_issue_on_map(self, issue):
+        """Выбирает связанный с ошибкой объект и переводит карту к нему."""
+        try:
+            issue = dict(issue or {})
+            point_id, polygon_id = self._target_ids()
+            layer_id = str(issue.get("layer_id", "") or "")
+            feature_id = int(issue.get("feature_id", -1) or -1)
+            number = str(issue.get("number", "") or "").strip()
+
+            candidate_ids = []
+            if layer_id:
+                candidate_ids.append(layer_id)
+            for candidate in (point_id, polygon_id):
+                if candidate and candidate not in candidate_ids:
+                    candidate_ids.append(candidate)
+
+            target_layer = None
+            target_fid = -1
+
+            # Ошибки атрибутов уже содержат FID. Для геометрических проблем
+            # аудит иногда знает только номер скважины, поэтому объект ищется
+            # по единому логическому полю «Номер скважины».
+            if feature_id >= 0 and layer_id:
+                layer = QgsProject.instance().mapLayer(layer_id)
+                if layer is not None and layer.getFeature(feature_id).isValid():
+                    target_layer = layer
+                    target_fid = feature_id
+
+            if target_layer is None and number:
+                for candidate_id in candidate_ids:
+                    layer = QgsProject.instance().mapLayer(candidate_id)
+                    if layer is None:
+                        continue
+                    for feature in layer.getFeatures():
+                        if feature_well_number(feature, layer, "").strip() == number:
+                            target_layer = layer
+                            target_fid = feature.id()
+                            break
+                    if target_layer is not None:
+                        break
+
+            if target_layer is None or target_fid < 0:
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Интерактивный список ошибок",
+                    "Для этой проблемы не удалось однозначно определить объект на карте."
+                )
+                return
+
+            target_layer.removeSelection()
+            target_layer.selectByIds([target_fid])
+            self.main.iface.setActiveLayer(target_layer)
+            canvas = self.main.iface.mapCanvas()
+            if hasattr(canvas, "zoomToSelected"):
+                canvas.zoomToSelected(target_layer)
+            else:
+                self.main.iface.actionZoomToSelected().trigger()
+            canvas.refresh()
+        except Exception as exc:
+            self._error(exc)
+
+    def open_repair_wizard(self):
+        """Запускает аудит, мастер исправления и повторный контроль после изменений."""
         try:
             point_id, polygon_id = self._target_ids()
-            report = self.controller.validate_all_circles(point_id, polygon_id, self.main.ui.spinArea.value())
-            counts = report.get("severity_counts", {})
+            point_fields, polygon_fields = self._required_fields()
+            audit = self.controller.full_project_audit(
+                point_id, polygon_id, self.main.ui.spinArea.value(),
+                point_fields, polygon_fields,
+            )
+            if not audit.get("total", 0):
+                QtWidgets.QMessageBox.information(
+                    self, "Мастер исправления ошибок",
+                    "Полный аудит не обнаружил проблем, требующих исправления."
+                )
+                self.txtQuality.setPlainText("Полный аудит: проблем не обнаружено.")
+                self.auditIssueList.set_report(audit)
+                return
+
+            wizard = RepairWizard(audit, self)
+            if wizard.exec_() != QtWidgets.QDialog.Accepted:
+                return
+
+            result = self.controller.repair_project(
+                point_id, polygon_id,
+                self.main.ui.spinYear.value(),
+                self.main.ui.spinArea.value(),
+                point_fields, polygon_fields,
+                wizard.plan(),
+            )
+            before = result.get("before", {})
+            after = result.get("after", {})
+            before_counts = before.get("severity_counts", {})
+            after_counts = after.get("severity_counts", {})
             lines = [
-                f"Проверено: {report.get('total', 0)}",
-                f"Без замечаний: {report.get('ok', 0)}",
-                f"С замечаниями: {report.get('failed', 0)}",
-                f"Критических: {counts.get(Severity.CRITICAL, 0)}",
-                f"Ошибок: {counts.get(Severity.ERROR, 0)}",
-                f"Предупреждений: {counts.get(Severity.WARNING, 0)}",
+                "Мастер исправления завершён.",
+                "",
+                f"Проблем до: {before.get('total', 0)}",
+                f"Проблем после: {after.get('total', 0)}",
+                f"Устранено по повторному аудиту: {result.get('fixed', 0)}",
+                "",
+                "До исправления: "
+                f"критических {before_counts.get(Severity.CRITICAL, 0)}, "
+                f"ошибок {before_counts.get(Severity.ERROR, 0)}, "
+                f"предупреждений {before_counts.get(Severity.WARNING, 0)}",
+                "После исправления: "
+                f"критических {after_counts.get(Severity.CRITICAL, 0)}, "
+                f"ошибок {after_counts.get(Severity.ERROR, 0)}, "
+                f"предупреждений {after_counts.get(Severity.WARNING, 0)}",
             ]
-            for item in [x for x in report.get("items", []) if not (x.get("area_ok") and x.get("center_ok"))][:30]:
-                lines.append(f"№{item.get('number')} [{Severity.label(item.get('severity'))}]: {item.get('message')}")
+            if after.get("total", 0):
+                lines.append("Оставшиеся проблемы будут доступны для дальнейшего анализа.")
             self.txtQuality.setPlainText("\n".join(lines))
+            self.last_audit_report = after
+            self.auditIssueList.set_report(after)
+            self.main.refresh_dashboard()
             self.refresh_overview()
+            QtWidgets.QMessageBox.information(
+                self, "Мастер исправления ошибок", "\n".join(lines)
+            )
         except Exception as exc:
             self._error(exc)
 
@@ -532,26 +812,28 @@ class ControlCenterDialog(QtWidgets.QDialog):
             self._error(exc)
 
     def assign_parcels(self):
-        parcel_id = self.cmbParcelLayer.currentData()
-        cad = self.cmbCadastralField.currentData()
-        label = self.cmbParcelLabelField.currentData()
-        if not parcel_id or not cad:
-            QtWidgets.QMessageBox.warning(self, "Земельные участки", "Выберите слой участков и поле кадастрового номера.")
-            return
+        """Определяет участок каждой скважины полностью автоматически."""
         try:
-            point_id, _ = self._target_ids()
-            result = self.controller.assign_parcels(
-                point_id, parcel_id, cad, parcel_label_field=label,
-                selected_only=self.chkSelectedOnly.isChecked(),
+            point_id, polygon_id = self._target_ids()
+            result = self.controller.assign_parcels_auto(
+                point_id, polygon_id, selected_only=self.chkSelectedOnly.isChecked()
             )
-            self.settings.set_parcel_settings(self.cmbParcelLayer.currentText(), label, cad)
+            self.lblParcelLayerAuto.setText(result.get("source_layer", "—") or "—")
+            self.lblParcelFieldAuto.setText(result.get("label_field", "—") or "—")
+            self.lblCadastralFieldAuto.setText(result.get("cadastral_field", "—") or "—")
             self.txtParcels.setPlainText(
-                f"Обработано скважин: {result['processed']}\n"
-                f"Участок найден: {result['found']}\n"
-                f"Не найден: {result['not_found']}\n"
-                f"Несколько пересечений: {result['multiple']}"
+                f"Источник определён автоматически: {result.get('source_layer', '—')}\n"
+                f"Поле участка: {result.get('label_field', '—') or '—'}\n"
+                f"Поле кадастрового номера: {result.get('cadastral_field', '—') or '—'}\n\n"
+                f"Обработано скважин: {result.get('processed', 0)}\n"
+                f"Участок найден: {result.get('found', 0)}\n"
+                f"Не найден: {result.get('not_found', 0)}\n"
+                f"Несколько пересечений: {result.get('multiple', 0)}\n"
+                f"Кадастровых номеров получено: {result.get('cadastral_found', 0)}\n"
+                f"Пустых кадастровых номеров: {result.get('cadastral_empty', 0)}"
             )
             self.main.refresh_dashboard()
+            self.refresh_statistics()
         except Exception as exc:
             self._error(exc)
 
@@ -628,12 +910,51 @@ class ControlCenterDialog(QtWidgets.QDialog):
         except Exception as exc:
             self._error(exc)
 
+    def export_pair_integrity_report(self):
+        """Экспортирует отдельный отчёт нарушений правила «1 точка = 1 круг»."""
+        try:
+            point_id, polygon_id = self._target_ids()
+            point_fields, polygon_fields = self._required_fields()
+            audit_report = self.controller.full_project_audit(
+                point_id, polygon_id, self.main.ui.spinArea.value(),
+                point_fields, polygon_fields,
+            )
+            pair_report = audit_report.get("pair_integrity", {})
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self, "Сохранить отчёт 1 точка = 1 круг",
+                str(Path(self.main._default_output_dir()) / "WellImporter_OnePoint_OneCircle.csv"),
+                "CSV (*.csv)",
+            )
+            if not path:
+                return
+            with open(path, "w", encoding="utf-8-sig", newline="") as stream:
+                writer = csv.writer(stream, delimiter=";")
+                writer.writerow([
+                    "Номер скважины", "Количество точек", "Количество кругов",
+                    "Серьёзность", "Нарушение",
+                ])
+                for item in pair_report.get("items", []):
+                    writer.writerow([
+                        item.get("number", ""),
+                        item.get("point_count", 0),
+                        item.get("circle_count", 0),
+                        Severity.label(item.get("severity")),
+                        item.get("message", ""),
+                    ])
+            QtWidgets.QMessageBox.information(
+                self, "Отчёт 1 точка = 1 круг",
+                f"Отчёт сохранён:\n{path}\n\nНарушений: {pair_report.get('violations', 0)}"
+            )
+        except Exception as exc:
+            self._error(exc)
+
     def export_attribute_report(self):
         try:
             point_id, polygon_id = self._target_ids()
             point_fields, polygon_fields = self._required_fields()
-            attr_report = self.controller.check_required_attributes(point_id, polygon_id, point_fields, polygon_fields)
-            quality_report = self.controller.validate_all_circles(point_id, polygon_id, self.main.ui.spinArea.value())
+            audit_report = self.controller.full_project_audit(
+                point_id, polygon_id, self.main.ui.spinArea.value(), point_fields, polygon_fields
+            )
             path, _ = QtWidgets.QFileDialog.getSaveFileName(
                 self, "Сохранить отчёт контроля",
                 str(Path(self.main._default_output_dir()) / "WellImporter_Project_Audit.csv"),
@@ -644,17 +965,10 @@ class ControlCenterDialog(QtWidgets.QDialog):
             with open(path, "w", encoding="utf-8-sig", newline="") as stream:
                 writer = csv.writer(stream, delimiter=";")
                 writer.writerow(["Тип проверки", "Слой/объект", "Номер скважины", "Серьёзность", "Проблема"])
-                for issue in attr_report.get("issues", []):
+                for issue in audit_report.get("issues", []):
                     writer.writerow([
-                        "Обязательный атрибут", issue.get("layer_name", ""), issue.get("number", ""),
+                        issue.get("category", ""), issue.get("layer_name", ""), issue.get("number", ""),
                         Severity.label(issue.get("severity")), issue.get("message", ""),
-                    ])
-                for item in quality_report.get("items", []):
-                    if item.get("area_ok") and item.get("center_ok"):
-                        continue
-                    writer.writerow([
-                        "Площадной круг", "Площадные круги", item.get("number", ""),
-                        Severity.label(item.get("severity")), item.get("message", ""),
                     ])
             QtWidgets.QMessageBox.information(self, "Отчёт", f"Полный отчёт контроля сохранён:\n{path}")
         except Exception as exc:

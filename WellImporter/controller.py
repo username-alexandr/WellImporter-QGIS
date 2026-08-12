@@ -20,6 +20,19 @@ from .severity import Severity
 from .attribute_checker import AttributeChecker
 from .circle_repair import CircleRepairManager
 from .point_repair import PointRepairManager
+from .project_audit import ProjectAuditManager
+from .pair_integrity import PairIntegrityChecker
+from .pair_number_checker import PairNumberConsistencyChecker
+from .well_number_validator import WellNumberFormatChecker
+from .statistics_panel import StatisticsManager
+from .field_scope import FieldScopeManager
+from .basemap_catalog import BasemapCatalog
+from .field_preflight import FieldPreflightChecker
+from .field_sync import FieldSyncManager
+from .web_map_export import WebMapExporter
+from .management_web_map import ManagementWebMapExporter
+from .field_package import FieldPackageBuilder
+from .full_workflow import FullWorkflowManager
 from .parcel_tools import ParcelManager
 from .well_search import WellSearchManager
 from .well_card import WellCardManager
@@ -75,9 +88,35 @@ class ImportController:
         self.attributes = AttributeChecker()
         self.circle_repair = CircleRepairManager()
         self.point_repair = PointRepairManager()
+        self.project_audit = ProjectAuditManager()
+        self.pair_integrity = PairIntegrityChecker()
+        self.pair_number_consistency = PairNumberConsistencyChecker()
+        self.number_format = WellNumberFormatChecker()
+        self.statistics = StatisticsManager()
+        self.field_scope = FieldScopeManager(self.project)
+        self.basemaps = BasemapCatalog(iface)
+        self.field_preflight = FieldPreflightChecker(self.project)
+        self.field_sync = FieldSyncManager(self.project)
+        self.web_map = WebMapExporter(self.project)
+        self.management_web_map = ManagementWebMapExporter(self.project)
+        self.field_package = FieldPackageBuilder(
+            self.archive_export, self.web_map, self.field_sync,
+            self.field_preflight, self.basemaps,
+        )
+        self.full_workflow = FullWorkflowManager(self.project, self.field_preflight)
         self.parcels = ParcelManager()
         self.well_search = WellSearchManager()
         self.well_cards = WellCardManager()
+
+    def project_statistics(self, point_layer_id):
+        """Возвращает агрегированную статистику рабочего слоя скважин."""
+        layer = self.layer_by_id(point_layer_id)
+        return self.statistics.summarize(layer)
+
+    def statistics_feature_ids(self, point_layer_id, dimension, value):
+        """Возвращает FID скважин, соответствующих выбранному столбцу диаграммы."""
+        layer = self.layer_by_id(point_layer_id)
+        return self.statistics.feature_ids(layer, dimension, value)
 
     def layer_by_id(self, layer_id):
         layer = self.project.mapLayer(layer_id)
@@ -254,11 +293,22 @@ class ImportController:
         return result
 
     def analyze_field_package(self, point_layer_id, polygon_layer_id):
-        """Возвращает результаты мастера проверки проекта перед выездом."""
+        """Проверяет слои, интернет-источники и все обнаруженные внешние файлы проекта."""
         point_layer = self.layer_by_id(point_layer_id)
         polygon_layer = self.layer_by_id(polygon_layer_id)
         self._validate_layers(point_layer, polygon_layer, require_editable=False)
-        return self.archive_export.analyze_field_package(point_layer, polygon_layer)
+        report = self.archive_export.analyze_field_package(point_layer, polygon_layer)
+        preflight = self.field_preflight.run()
+        report.setdefault("checks", []).extend(preflight.get("issues", []))
+        report["preflight"] = preflight
+        report["severity_counts"] = Severity.counts(
+            item.get("severity") for item in report.get("checks", [])
+        )
+        report["highest_severity"] = (
+            Severity.max(*(item.get("severity") for item in report.get("checks", [])))
+            if report.get("checks") else Severity.INFO
+        )
+        return report
 
     def export_field_package(self, point_layer_id, polygon_layer_id, output_path, selected_only=False,
                              store_styles=True, create_project=True, relative_paths=True,
@@ -266,7 +316,7 @@ class ImportController:
         point_layer = self.layer_by_id(point_layer_id)
         polygon_layer = self.layer_by_id(polygon_layer_id)
         self._validate_layers(point_layer, polygon_layer, require_editable=False)
-        result = self.archive_export.export_field_package(
+        result = self.field_package.build(
             point_layer, polygon_layer, output_path,
             selected_only=selected_only,
             store_styles=store_styles,
@@ -276,8 +326,61 @@ class ImportController:
             preparation_report=preparation_report,
         )
         self.logger.write(
-            f"Выездной экспорт: точек {result['points']}, кругов {result['circles']}, "
-            f"стилей в GPKG {result.get('styles_stored', 0)}, GeoPackage: {result['gpkg_path']}"
+            f"Выездной ZIP: точек {result['points']}, кругов {result['circles']}, "
+            f"файл: {result['zip_path']}"
+        )
+        return result
+
+    def export_management_web_map(self, point_layer_id, polygon_layer_id, output_path):
+        """Создаёт автономную HTML-карту для передачи руководству."""
+        point_layer = self.layer_by_id(point_layer_id)
+        polygon_layer = self.layer_by_id(polygon_layer_id)
+        self._validate_layers(point_layer, polygon_layer, require_editable=False)
+
+        # Перед HTML-экспортом сведения об участке и кадастровом номере
+        # актуализируются автоматически, чтобы фильтры/карточки были полными.
+        cadastral = self.assign_parcels_auto(
+            point_layer_id, polygon_layer_id, selected_only=False
+        )
+        result = self.management_web_map.export(
+            point_layer, polygon_layer, output_path, selected_only=False
+        )
+        result["cadastral"] = cadastral
+        self.logger.write(
+            f"HTML-карта руководству: скважин {result.get('points', 0)}, "
+            f"файл {result.get('path', '')}"
+        )
+        return result
+
+    def write_full_workflow_report(self, output_dir, summary):
+        """Записывает JSON-сводку и CSV оставшихся ошибок полного цикла."""
+        return self.full_workflow.write_report(output_dir, summary)
+
+    def create_full_workflow_backup(self, output_dir, report_files=None):
+        """Создаёт ZIP резервной копии QGIS-проекта и локальных ресурсов."""
+        return self.full_workflow.create_backup(output_dir, report_files)
+
+    def compare_field_return(self, point_layer_id, polygon_layer_id, package_path):
+        """Сравнивает офисную и выездную версии и возвращает только полевые изменения."""
+        point_layer = self.layer_by_id(point_layer_id)
+        polygon_layer = self.layer_by_id(polygon_layer_id)
+        self._validate_layers(point_layer, polygon_layer, require_editable=False)
+        return self.field_sync.compare_package(package_path, point_layer, polygon_layer)
+
+    def apply_field_return(self, point_layer_id, polygon_layer_id, package_path, changes):
+        """Применяет подтверждённые пользователем изменения после выезда."""
+        point_layer = self.layer_by_id(point_layer_id)
+        polygon_layer = self.layer_by_id(polygon_layer_id)
+        result = self.field_sync.apply_changes(
+            package_path, point_layer, polygon_layer, changes
+        )
+        self._refresh_layer(point_layer)
+        self._refresh_layer(polygon_layer)
+        self.iface.mapCanvas().refresh()
+        self.logger.write(
+            f"Обратная синхронизация: применено {result.get('applied', 0)}, "
+            f"добавлено {result.get('added', 0)}, изменено {result.get('modified', 0)}, "
+            f"удалено {result.get('deleted', 0)}"
         )
         return result
 
@@ -286,6 +389,42 @@ class ImportController:
         polygon_layer = self.layer_by_id(polygon_layer_id)
         self._validate_layers(point_layer, polygon_layer, require_editable=False)
         return self.attributes.check(point_layer, polygon_layer, point_fields, polygon_fields)
+
+    def full_project_audit(self, point_layer_id, polygon_layer_id, expected_area_ha=33.0,
+                           point_fields=None, polygon_fields=None):
+        """
+        Выполняет единый аудит выбранных рабочих слоёв проекта.
+
+        Аудит объединяет существующие проверки обязательных атрибутов и
+        геометрии/пар точка-круг в один отчёт. Метод только читает данные и
+        ничего не исправляет автоматически.
+        """
+        point_layer = self.layer_by_id(point_layer_id)
+        polygon_layer = self.layer_by_id(polygon_layer_id)
+        self._validate_layers(point_layer, polygon_layer, require_editable=False)
+
+        attributes = self.attributes.check(
+            point_layer, polygon_layer, point_fields, polygon_fields
+        )
+        quality = self.quality.validate_all(
+            point_layer, polygon_layer, expected_area_ha
+        )
+        pair_report = self.pair_integrity.check(point_layer, polygon_layer)
+        number_consistency = self.pair_number_consistency.check(
+            point_layer, polygon_layer
+        )
+        number_format = self.number_format.check(point_layer, polygon_layer)
+        report = self.project_audit.build(
+            point_layer, polygon_layer, attributes, quality,
+            pair_report, number_consistency, number_format
+        )
+        self.logger.write(
+            f"Полный аудит проекта: проблем {report.get('total', 0)}, "
+            f"критических {report.get('severity_counts', {}).get(Severity.CRITICAL, 0)}, "
+            f"ошибок {report.get('severity_counts', {}).get(Severity.ERROR, 0)}, "
+            f"предупреждений {report.get('severity_counts', {}).get(Severity.WARNING, 0)}"
+        )
+        return report
 
     def validate_all_circles(self, point_layer_id, polygon_layer_id, expected_area_ha=33.0,
                              area_tolerance_pct=2.0, center_tolerance_m=5.0):
@@ -298,9 +437,83 @@ class ImportController:
             center_tolerance_m=center_tolerance_m,
         )
 
+    def repair_project(self, point_layer_id, polygon_layer_id, default_year, expected_area_ha=33.0,
+                     point_fields=None, polygon_fields=None, plan=None):
+        """Выполняет выбранный мастером план исправлений и повторный полный аудит."""
+        plan = dict(plan or {})
+        if not any((
+            plan.get("repair_points"),
+            plan.get("create_missing_circles"),
+            plan.get("repair_circles"),
+            plan.get("sync_circle_attributes"),
+        )):
+            raise Exception("Не выбрана ни одна операция исправления.")
+
+        before = self.full_project_audit(
+            point_layer_id, polygon_layer_id, expected_area_ha,
+            point_fields, polygon_fields,
+        )
+        operations = {}
+
+        # Сначала восстанавливаем точки: последующее исправление кругов
+        # уже использует дополненные пары точка/круг.
+        if plan.get("repair_points"):
+            operations["points"] = self.repair_points(
+                point_layer_id, polygon_layer_id, default_year
+            )
+
+        if plan.get("create_missing_circles"):
+            operations["missing_circles"] = self.create_missing_circles(
+                point_layer_id, polygon_layer_id, expected_area_ha
+            )
+
+        if plan.get("repair_circles"):
+            operations["circles"] = self.repair_circles(
+                point_layer_id, polygon_layer_id, expected_area_ha,
+                repair_area=bool(plan.get("repair_area", True)),
+                repair_center=bool(plan.get("repair_center", True)),
+                create_missing=False,
+            )
+
+        if plan.get("sync_circle_attributes"):
+            operations["circle_attributes"] = self.sync_circle_attributes(
+                point_layer_id, polygon_layer_id, expected_area_ha
+            )
+
+        after = self.full_project_audit(
+            point_layer_id, polygon_layer_id, expected_area_ha,
+            point_fields, polygon_fields,
+        )
+        self.logger.write(
+            f"Мастер исправления: проблем до {before.get('total', 0)}, "
+            f"после {after.get('total', 0)}"
+        )
+        return {
+            "before": before,
+            "after": after,
+            "operations": operations,
+            "fixed": max(0, int(before.get("total", 0)) - int(after.get("total", 0))),
+        }
+
+    def create_missing_circles(self, point_layer_id, polygon_layer_id, expected_area_ha=33.0):
+        """Создаёт круги только для тех существующих точек, у которых их ещё нет."""
+        point_layer = self.layer_by_id(point_layer_id)
+        polygon_layer = self.layer_by_id(polygon_layer_id)
+        self._validate_layers(point_layer, polygon_layer)
+        result = self.circle_repair.create_missing_circles(
+            point_layer, polygon_layer, expected_area_ha
+        )
+        self._refresh_layer(polygon_layer)
+        self.iface.mapCanvas().refresh()
+        self.logger.write(
+            f"Создание отсутствующих кругов: создано {result.get('created', 0)}"
+        )
+        return result
+
     def repair_circles(self, point_layer_id, polygon_layer_id, expected_area_ha=33.0,
                        repair_area=True, repair_center=True,
-                       area_tolerance_pct=2.0, center_tolerance_m=5.0):
+                       area_tolerance_pct=2.0, center_tolerance_m=5.0,
+                       create_missing=True):
         """
         Исправляет площадные круги и создаёт отсутствующие круги
         для существующих точек с номером скважины.
@@ -309,11 +522,13 @@ class ImportController:
         polygon_layer = self.layer_by_id(polygon_layer_id)
         self._validate_layers(point_layer, polygon_layer)
 
-        created = self.circle_repair.create_missing_circles(
-            point_layer,
-            polygon_layer,
-            expected_area_ha,
-        )
+        created = {"created": 0}
+        if create_missing:
+            created = self.circle_repair.create_missing_circles(
+                point_layer,
+                polygon_layer,
+                expected_area_ha,
+            )
 
         result = self.circle_repair.repair(
             point_layer, polygon_layer, expected_area_ha,
@@ -375,6 +590,76 @@ class ImportController:
         )
         return result
 
+    def detect_parcel_source(self, polygon_layer_id=None, require_cadastral=False):
+        """Автоматически определяет слой земельных участков и подходящие поля."""
+        excluded = [polygon_layer_id] if polygon_layer_id else []
+        source = self.parcels.detect_source(excluded, require_cadastral=require_cadastral)
+        return {
+            "layer_id": source.get("layer_id", ""),
+            "layer_name": source.get("layer_name", ""),
+            "label_field": source.get("label_field", ""),
+            "cadastral_field": source.get("cadastral_field", ""),
+            "score": source.get("score", 0),
+        }
+
+    def prepare_field_scope(self, point_layer_id, polygon_layer_id, mode):
+        """Готовит территорию выезда и автоматически добавляет участок/кадастровый номер."""
+        point_layer = self.layer_by_id(point_layer_id)
+        source = self.parcels.detect_source(
+            [polygon_layer_id], require_cadastral=True
+        )
+        parcel_layer = source["layer"]
+        scope = self.field_scope.prepare(mode, point_layer, parcel_layer)
+
+        cadastral = self.parcels.assign_auto(
+            point_layer,
+            excluded_layer_ids=[polygon_layer_id],
+            selected_only=bool(scope.get("selected_only")),
+        )
+        self._refresh_layer(point_layer)
+        self.iface.mapCanvas().refresh()
+        self.logger.write(
+            f"Территория выезда: режим {scope.get('mode')}, "
+            f"скважин {scope.get('selected_wells', 0)}, "
+            f"кадастровых номеров {cadastral.get('cadastral_found', 0)}"
+        )
+        return {
+            "scope": scope,
+            "cadastral": cadastral,
+            "parcel_layer_id": parcel_layer.id(),
+            "parcel_layer_name": parcel_layer.name(),
+        }
+
+    def assign_parcel_names_auto(self, point_layer_id, polygon_layer_id=None, selected_only=False):
+        """Определяет земельные участки автоматически, без выбора слоя или поля."""
+        point_layer = self.layer_by_id(point_layer_id)
+        excluded = [polygon_layer_id] if polygon_layer_id else []
+        result = self.parcels.assign_parcel_names_auto(
+            point_layer, excluded_layer_ids=excluded, selected_only=selected_only
+        )
+        self._refresh_layer(point_layer)
+        self.iface.mapCanvas().refresh()
+        self.logger.write(
+            f"Автоопределение земельных участков: слой «{result.get('source_layer', '')}», "
+            f"найдено {result.get('found', 0)}, не найдено {result.get('not_found', 0)}"
+        )
+        return result
+
+    def assign_parcels_auto(self, point_layer_id, polygon_layer_id=None, selected_only=False):
+        """Заполняет участок и кадастровый номер полностью автоматически."""
+        point_layer = self.layer_by_id(point_layer_id)
+        excluded = [polygon_layer_id] if polygon_layer_id else []
+        result = self.parcels.assign_auto(
+            point_layer, excluded_layer_ids=excluded, selected_only=selected_only
+        )
+        self._refresh_layer(point_layer)
+        self.iface.mapCanvas().refresh()
+        self.logger.write(
+            f"Автоматические участки/кадастр: слой «{result.get('source_layer', '')}», "
+            f"участков {result.get('found', 0)}, кадастровых номеров {result.get('cadastral_found', 0)}"
+        )
+        return result
+
     def assign_parcels(self, point_layer_id, parcel_layer_id, cadastral_field,
                        parcel_label_field=None, selected_only=False):
         point_layer = self.layer_by_id(point_layer_id)
@@ -412,16 +697,17 @@ class ImportController:
 
     def project_status(self, point_layer_id, polygon_layer_id, expected_area_ha=33.0,
                        point_fields=None, polygon_fields=None):
+        """Возвращает состояние панели на основе того же единого аудита проекта."""
         point_layer = self.layer_by_id(point_layer_id)
         polygon_layer = self.layer_by_id(polygon_layer_id)
-        self._validate_layers(point_layer, polygon_layer, require_editable=False)
-        attrs = self.attributes.check(point_layer, polygon_layer, point_fields, polygon_fields)
-        quality = self.quality.validate_all(point_layer, polygon_layer, expected_area_ha)
-        attr_counts = attrs.get("severity_counts", {})
-        quality_counts = quality.get("severity_counts", {})
-        critical = attr_counts.get(Severity.CRITICAL, 0) + quality_counts.get(Severity.CRITICAL, 0)
-        errors = attr_counts.get(Severity.ERROR, 0) + quality_counts.get(Severity.ERROR, 0) + critical
-        warnings = attr_counts.get(Severity.WARNING, 0) + quality_counts.get(Severity.WARNING, 0)
+        audit = self.full_project_audit(
+            point_layer_id, polygon_layer_id, expected_area_ha,
+            point_fields, polygon_fields,
+        )
+        counts = audit.get("severity_counts", {})
+        critical = counts.get(Severity.CRITICAL, 0)
+        errors = counts.get(Severity.ERROR, 0) + critical
+        warnings = counts.get(Severity.WARNING, 0)
         history_items = self.history.items()
         return {
             "wells": point_layer.featureCount(),
@@ -431,8 +717,9 @@ class ImportController:
             "critical": critical,
             "imports": len(history_items),
             "latest_import": history_items[0].get("timestamp", "") if history_items else "—",
-            "attributes": attrs,
-            "quality": quality,
+            "attributes": audit.get("attributes", {}),
+            "quality": audit.get("quality", {}),
+            "audit": audit,
         }
 
     def _resolve_layer(self, layer_id, layer_name):
@@ -566,6 +853,10 @@ class ImportController:
 
     def _ensure_fields(self, layer, is_point):
         ensure_well_number_field(layer)
+        if is_point:
+            # Поле «Состояние» создаётся один раз и получает ValueMap с двумя
+            # согласованными значениями: «Пробурена» / «Не заполнено».
+            self.statistics.ensure_status_field(layer)
         existing = layer.fields().names()
         fields = []
         if is_point and self.POINT_YEAR_FIELD not in existing:
@@ -597,6 +888,8 @@ class ImportController:
         set_feature_well_number(feature, layer, record.number)
         feature[self.POINT_YEAR_FIELD] = str(year)
         feature[self.BATCH_FIELD] = batch_id
+        if self.statistics.STATUS_FIELD in feature.fields().names():
+            feature[self.statistics.STATUS_FIELD] = self.statistics.STATUS_DRILLED
         # Не выбираем оросительную систему автоматически.
         self._clear_irrigation_system(feature)
 
