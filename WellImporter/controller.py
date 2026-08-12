@@ -24,6 +24,7 @@ from .project_audit import ProjectAuditManager
 from .pair_integrity import PairIntegrityChecker
 from .pair_number_checker import PairNumberConsistencyChecker
 from .well_number_validator import WellNumberFormatChecker
+from .statistics_panel import StatisticsManager
 from .parcel_tools import ParcelManager
 from .well_search import WellSearchManager
 from .well_card import WellCardManager
@@ -83,9 +84,20 @@ class ImportController:
         self.pair_integrity = PairIntegrityChecker()
         self.pair_number_consistency = PairNumberConsistencyChecker()
         self.number_format = WellNumberFormatChecker()
+        self.statistics = StatisticsManager()
         self.parcels = ParcelManager()
         self.well_search = WellSearchManager()
         self.well_cards = WellCardManager()
+
+    def project_statistics(self, point_layer_id):
+        """Возвращает агрегированную статистику рабочего слоя скважин."""
+        layer = self.layer_by_id(point_layer_id)
+        return self.statistics.summarize(layer)
+
+    def statistics_feature_ids(self, point_layer_id, dimension, value):
+        """Возвращает FID скважин, соответствующих выбранному столбцу диаграммы."""
+        layer = self.layer_by_id(point_layer_id)
+        return self.statistics.feature_ids(layer, dimension, value)
 
     def layer_by_id(self, layer_id):
         layer = self.project.mapLayer(layer_id)
@@ -730,6 +742,10 @@ class ImportController:
 
     def _ensure_fields(self, layer, is_point):
         ensure_well_number_field(layer)
+        if is_point:
+            # Поле «Состояние» создаётся один раз и получает ValueMap с двумя
+            # согласованными значениями: «Пробурена» / «Не заполнено».
+            self.statistics.ensure_status_field(layer)
         existing = layer.fields().names()
         fields = []
         if is_point and self.POINT_YEAR_FIELD not in existing:
@@ -761,6 +777,8 @@ class ImportController:
         set_feature_well_number(feature, layer, record.number)
         feature[self.POINT_YEAR_FIELD] = str(year)
         feature[self.BATCH_FIELD] = batch_id
+        if self.statistics.STATUS_FIELD in feature.fields().names():
+            feature[self.statistics.STATUS_FIELD] = self.statistics.STATUS_DRILLED
         # Не выбираем оросительную систему автоматически.
         self._clear_irrigation_system(feature)
 

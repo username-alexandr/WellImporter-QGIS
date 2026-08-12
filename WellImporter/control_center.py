@@ -11,6 +11,7 @@ from .severity import Severity
 from .well_number_field import feature_well_number
 from .repair_wizard import RepairWizard
 from .audit_issue_list import AuditIssueList
+from .statistics_panel import InteractiveBarChart
 
 
 class ControlCenterDialog(QtWidgets.QDialog):
@@ -29,6 +30,7 @@ class ControlCenterDialog(QtWidgets.QDialog):
         self._build_ui()
         self.refresh_layers()
         self.refresh_overview()
+        self.refresh_statistics()
 
     def _resize_to_available_screen(self):
         """Подбирает размер окна под доступную область экрана."""
@@ -69,6 +71,7 @@ class ControlCenterDialog(QtWidgets.QDialog):
         layout.addWidget(self.tabs, 1)
         self._build_import_tab()
         self._build_overview_tab()
+        self._build_statistics_tab()
         self._build_quality_tab()
         self._build_parcel_tab()
         self._build_search_tab()
@@ -171,6 +174,51 @@ class ControlCenterDialog(QtWidgets.QDialog):
         row.addStretch(1)
         v.addLayout(row)
         self._add_scroll_tab(tab, "Обзор")
+
+    def _build_statistics_tab(self):
+        tab = QtWidgets.QWidget()
+        v = QtWidgets.QVBoxLayout(tab)
+
+        note = QtWidgets.QLabel(
+            "Интерактивная статистика по рабочему слою скважин. Нажмите на столбец диаграммы, "
+            "чтобы выделить соответствующие скважины и приблизить их на карте."
+        )
+        note.setWordWrap(True)
+        v.addWidget(note)
+
+        top = QtWidgets.QHBoxLayout()
+        self.lblStatisticsTotal = QtWidgets.QLabel("Скважин: —")
+        top.addWidget(self.lblStatisticsTotal)
+        top.addStretch(1)
+        btnRefresh = QtWidgets.QPushButton("Обновить статистику")
+        btnRefresh.clicked.connect(self.refresh_statistics)
+        top.addWidget(btnRefresh)
+        v.addLayout(top)
+
+        grid = QtWidgets.QGridLayout()
+        self.chartYear = InteractiveBarChart("Скважины по годам")
+        self.chartParcel = InteractiveBarChart("Скважины по участкам")
+        self.chartStatus = InteractiveBarChart("Скважины по состояниям")
+        self.chartBatch = InteractiveBarChart("Скважины по партиям")
+        self.chartYear.barClicked.connect(lambda value: self.show_statistics_category("year", value))
+        self.chartParcel.barClicked.connect(lambda value: self.show_statistics_category("parcel", value))
+        self.chartStatus.barClicked.connect(lambda value: self.show_statistics_category("status", value))
+        self.chartBatch.barClicked.connect(lambda value: self.show_statistics_category("batch", value))
+        grid.addWidget(self.chartYear, 0, 0)
+        grid.addWidget(self.chartParcel, 0, 1)
+        grid.addWidget(self.chartStatus, 1, 0)
+        grid.addWidget(self.chartBatch, 1, 1)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        v.addLayout(grid, 1)
+
+        state_note = QtWidgets.QLabel(
+            "Поле «Состояние» создаётся автоматически. Допустимые значения: «Пробурена» и «Не заполнено». "
+            "Новые импортированные скважины получают состояние «Пробурена»."
+        )
+        state_note.setWordWrap(True)
+        v.addWidget(state_note)
+        self._add_scroll_tab(tab, "Статистика")
 
     def _build_quality_tab(self):
         tab = QtWidgets.QWidget()
@@ -408,6 +456,41 @@ class ControlCenterDialog(QtWidgets.QDialog):
 
     def _set_metric(self, label, title, value):
         label.setText(f"<b>{title}</b><br><span style='font-size:22px'>{value}</span>")
+
+    def refresh_statistics(self):
+        """Обновляет четыре интерактивные диаграммы статистики."""
+        try:
+            point_id, _ = self._target_ids()
+            stats = self.controller.project_statistics(point_id)
+            self.lblStatisticsTotal.setText(f"Скважин: {stats.get('total', 0)}")
+            self.chartYear.set_data(stats.get("year", []))
+            self.chartParcel.set_data(stats.get("parcel", []))
+            self.chartStatus.set_data(stats.get("status", []))
+            self.chartBatch.set_data(stats.get("batch", []))
+        except Exception as exc:
+            self.lblStatisticsTotal.setText(f"Статистика недоступна: {exc}")
+            for chart in (self.chartYear, self.chartParcel, self.chartStatus, self.chartBatch):
+                chart.set_data([])
+
+    def show_statistics_category(self, dimension, value):
+        """Выделяет на карте объекты, соответствующие выбранному столбцу диаграммы."""
+        try:
+            point_id, _ = self._target_ids()
+            layer = self.controller.layer_by_id(point_id)
+            ids = self.controller.statistics_feature_ids(point_id, dimension, value)
+            layer.removeSelection()
+            if not ids:
+                return
+            layer.selectByIds(ids)
+            self.main.iface.setActiveLayer(layer)
+            canvas = self.main.iface.mapCanvas()
+            if hasattr(canvas, "zoomToSelected"):
+                canvas.zoomToSelected(layer)
+            else:
+                self.main.iface.actionZoomToSelected().trigger()
+            canvas.refresh()
+        except Exception as exc:
+            self._error(exc)
 
     def full_project_audit(self):
         """Запускает единственную пользовательскую команду аудита всего проекта."""
@@ -734,6 +817,7 @@ class ControlCenterDialog(QtWidgets.QDialog):
                 f"Пустых кадастровых номеров: {result.get('cadastral_empty', 0)}"
             )
             self.main.refresh_dashboard()
+            self.refresh_statistics()
         except Exception as exc:
             self._error(exc)
 
