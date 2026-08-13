@@ -1,11 +1,6 @@
 # -*- coding: utf-8 -*-
 
 def classFactory(iface):
-    """
-    Точка входа QGIS.
-
-    QGIS вызывает эту функцию при загрузке плагина. Функция возвращает
-    экземпляр основного класса плагина WellImporter.
-    """
-    from .well_importer import WellImporter
-    return WellImporter(iface)
+    """Точка входа QGIS для актуальной реализации Well Importer."""
+    from .well_importer_v22 import WellImporterV22
+    return WellImporterV22(iface)
