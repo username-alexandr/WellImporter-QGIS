@@ -10,6 +10,8 @@ from qgis.core import (
     QgsProject,
 )
 
+from .coordinate_precision import CoordinatePrecisionNormalizer
+
 
 @dataclass
 class ParsedCoordinate:
@@ -29,14 +31,18 @@ class CoordinateParser:
     - PROJECTED — проекционные координаты, включая UTM, по указанной CRS;
     - AUTO — автоматическое определение DD/DMS и использование указанной CRS.
 
-    На выходе всегда возвращаются долгота/широта EPSG:4326, поэтому остальная
-    логика плагина работает единообразно.
+    На выходе всегда возвращаются долгота/широта EPSG:4326, нормализованные
+    до шести знаков после запятой, поэтому остальная логика плагина работает
+    с единым правилом точности.
     """
 
     WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
 
+    def __init__(self, coordinate_decimals=CoordinatePrecisionNormalizer.DEFAULT_DECIMALS):
+        self.precision = CoordinatePrecisionNormalizer(coordinate_decimals)
+
     def parse_pair(self, raw_x, raw_y, mode="AUTO", source_crs="EPSG:4326"):
-        """Преобразует пару исходных значений в EPSG:4326."""
+        """Преобразует пару исходных значений в EPSG:4326 и нормализует точность."""
         mode = str(mode or "AUTO").upper()
         source_crs = self._normalize_source_crs(source_crs)
 
@@ -52,6 +58,7 @@ class CoordinateParser:
             lon = self.parse_dms(raw_x, axis="lon")
             lat = self.parse_dms(raw_y, axis="lat")
             self._validate_lon_lat(lon, lat)
+            lon, lat = self.precision.normalize_pair(lon, lat)
             return ParsedCoordinate(lon, lat, "DMS")
 
         x = self.parse_decimal(raw_x)
@@ -60,10 +67,12 @@ class CoordinateParser:
         if mode == "PROJECTED" or not self._is_wgs84(source_crs):
             lon, lat = self._transform_to_wgs84(x, y, source_crs)
             self._validate_lon_lat(lon, lat)
+            lon, lat = self.precision.normalize_pair(lon, lat)
             label = "UTM/проекционные" if self._looks_like_utm(source_crs) else f"Проекционные ({source_crs})"
             return ParsedCoordinate(lon, lat, label)
 
         self._validate_lon_lat(x, y)
+        x, y = self.precision.normalize_pair(x, y)
         return ParsedCoordinate(x, y, "DD")
 
     def parse_decimal(self, value):
