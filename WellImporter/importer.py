@@ -10,6 +10,7 @@ from pathlib import Path
 from qgis.PyQt.QtWidgets import QApplication
 
 from .coordinate_parser import CoordinateParser
+from .import_quarantine import SessionImportQuarantine
 
 
 @dataclass
@@ -23,15 +24,26 @@ class WellRecord:
     coordinate_format: str = "DD"
 
 
+class ImportRecords(list):
+    """Список корректных записей с ошибочными строками текущего разбора."""
+
+    def __init__(self, records=(), quarantine=None):
+        super().__init__(records)
+        self.quarantine = list(quarantine or [])
+
+
 class BaseTableImporter:
     """Базовый разборщик таблиц и координат разных форматов."""
 
     def __init__(self):
         self.coordinate_parser = CoordinateParser()
+        # Очередь живёт только пока существует экземпляр импортера/QGIS-сессия.
+        self.quarantine = SessionImportQuarantine()
 
-    def parse_rows(self, rows, coordinate_mode="AUTO", source_crs="EPSG:4326"):
-        """Разбирает строки таблицы и возвращает список WellRecord."""
-        records, errors = [], []
+    def parse_rows(self, rows, coordinate_mode="AUTO", source_crs="EPSG:4326", source="Источник"):
+        """Разбирает строки, а ошибочные помещает в сессионный карантин."""
+        records = []
+        source = self.quarantine.begin(source)
 
         for row_index, row in enumerate(rows, start=1):
             # Важно сохранять пустые ячейки на своих позициях, чтобы столбцы
@@ -41,8 +53,10 @@ class BaseTableImporter:
                 continue
 
             if len(parts) < 3:
-                if any(ch.isdigit() for ch in " ".join(parts)):
-                    errors.append(f"Строка {row_index}: нужно минимум 3 столбца: X, Y, Номер скважины.")
+                if self._looks_like_header(parts):
+                    continue
+                message = f"Строка {row_index}: нужно минимум 3 столбца: X, Y, Номер скважины."
+                self.quarantine.add(source, row_index, parts, message)
                 continue
 
             try:
@@ -50,15 +64,26 @@ class BaseTableImporter:
             except Exception as exc:
                 if not records and self._looks_like_header(parts):
                     continue
-                errors.append(str(exc))
+                self.quarantine.add(source, row_index, parts, str(exc))
 
-        if errors:
-            raise Exception("Ошибки чтения данных:\n" + "\n".join(errors[:30]))
-
+        quarantined = self.quarantine.entries(source)
         if not records:
+            if quarantined:
+                raise Exception(
+                    "Не удалось прочитать ни одной корректной строки. "
+                    f"Ошибочных строк в карантине: {len(quarantined)}."
+                )
             raise Exception("Не удалось прочитать ни одной строки.\nНужны три столбца: X | Y | Номер скважины.")
 
-        return records
+        return ImportRecords(records, quarantined)
+
+    def quarantine_entries(self, source=None):
+        """Возвращает копию очереди карантина текущей сессии."""
+        return self.quarantine.entries(source)
+
+    def clear_quarantine(self, source=None):
+        """Очищает всю очередь или ошибки конкретного источника."""
+        self.quarantine.clear(source)
 
     def _parse_parts(self, parts, row_index, coordinate_mode, source_crs):
         """Преобразует первые три столбца строки в WellRecord."""
@@ -122,7 +147,7 @@ class ClipboardImporter(BaseTableImporter):
         for raw_line in text.splitlines():
             if raw_line.strip():
                 rows.append(self._split_line(raw_line.rstrip("\r\n")))
-        return self.parse_rows(rows, coordinate_mode, source_crs)
+        return self.parse_rows(rows, coordinate_mode, source_crs, source="Буфер обмена")
 
 
 class ExcelFileImporter(BaseTableImporter):
@@ -144,7 +169,7 @@ class ExcelFileImporter(BaseTableImporter):
         else:
             raise Exception("Неподдерживаемый формат файла.\nПоддерживаются: .xlsx, .csv, .txt")
 
-        return self.parse_rows(rows, coordinate_mode, source_crs)
+        return self.parse_rows(rows, coordinate_mode, source_crs, source=path.name)
 
     def _read_csv_or_txt(self, path):
         """Читает CSV/TXT с автоматическим подбором кодировки."""
