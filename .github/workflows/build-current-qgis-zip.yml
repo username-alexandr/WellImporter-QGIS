@@ -1,0 +1,52 @@
+name: Build current QGIS installation ZIP
+
+on:
+  push:
+    branches:
+      - chore/publish-releases-2.1.0
+    paths:
+      - '.github/workflows/build-current-qgis-zip.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout stable main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Validate and build QGIS plugin ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f WellImporter/__init__.py
+          test -f WellImporter/metadata.txt
+          grep -q '^version=2.1.0$' WellImporter/metadata.txt
+          grep -q '^repository=https://github.com/SashaRai/WellImporter-QGIS$' WellImporter/metadata.txt
+          find WellImporter -type d -name '__pycache__' -prune -exec rm -rf {} + || true
+          find WellImporter -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete || true
+          python - <<'PY'
+          from pathlib import Path
+          import ast
+          for path in Path('WellImporter').rglob('*.py'):
+              ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
+          print('Python syntax OK')
+          PY
+          rm -f WellImporter-v2.1.0.zip
+          zip -qr WellImporter-v2.1.0.zip WellImporter
+          unzip -t WellImporter-v2.1.0.zip
+          sha256sum WellImporter-v2.1.0.zip | tee WellImporter-v2.1.0.sha256.txt
+
+      - name: Upload installation package
+        uses: actions/upload-artifact@v4
+        with:
+          name: WellImporter-v2.1.0-install
+          path: |
+            WellImporter-v2.1.0.zip
+            WellImporter-v2.1.0.sha256.txt
+          if-no-files-found: error
+          retention-days: 30
