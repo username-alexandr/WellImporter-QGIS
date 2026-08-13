@@ -1,0 +1,85 @@
+name: Validate Well Importer
+
+on:
+  push:
+    branches:
+      - feature/route-and-productivity-2.2.0
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate plugin source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f WellImporter/__init__.py
+          test -f WellImporter/metadata.txt
+          grep -q '^version=2.2.0$' WellImporter/metadata.txt
+          grep -q '^repository=https://github.com/SashaRai/WellImporter-QGIS$' WellImporter/metadata.txt
+          python -m py_compile WellImporter/*.py
+          python - <<'PY'
+          from pathlib import Path
+          import ast
+          import xml.etree.ElementTree as ET
+
+          root = Path('WellImporter')
+          py_files = sorted(root.glob('*.py'))
+          modules = {p.stem for p in py_files}
+          modules.add('__init__')
+
+          for path in py_files:
+              tree = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module:
+                      module = node.module.split('.')[0]
+                      if module not in modules:
+                          raise SystemExit(f'Missing relative module {module} imported by {path}')
+
+          for path in root.glob('*.ui'):
+              ET.parse(path)
+
+          forbidden = [p for p in root.rglob('*') if p.name.endswith(('.pyc', '.pyo')) or p.name == '__pycache__']
+          if forbidden:
+              raise SystemExit('Compiled/cache files found: ' + ', '.join(map(str, forbidden)))
+
+          print(f'Validated Python modules: {len(py_files)}')
+          PY
+
+      - name: Build QGIS installation ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f WellImporter-v2.2.0.zip
+          zip -qr WellImporter-v2.2.0.zip WellImporter -x '*/__pycache__/*' '*.pyc' '*.pyo'
+          unzip -t WellImporter-v2.2.0.zip
+          python - <<'PY'
+          import zipfile
+          with zipfile.ZipFile('WellImporter-v2.2.0.zip') as zf:
+              names = zf.namelist()
+              roots = {name.split('/', 1)[0] for name in names if name}
+              assert roots == {'WellImporter'}, roots
+              assert 'WellImporter/__init__.py' in names
+              assert 'WellImporter/metadata.txt' in names
+          print('ZIP root OK: WellImporter/')
+          PY
+          sha256sum WellImporter-v2.2.0.zip | tee WellImporter-v2.2.0.sha256.txt
+
+      - name: Upload validated installation package
+        uses: actions/upload-artifact@v4
+        with:
+          name: WellImporter-v2.2.0-install
+          path: |
+            WellImporter-v2.2.0.zip
+            WellImporter-v2.2.0.sha256.txt
+          if-no-files-found: error
+          retention-days: 30
