@@ -1,0 +1,71 @@
+name: Validate Well Importer 2.2
+
+on:
+  push:
+    branches:
+      - feature/route-and-productivity-2.2.0
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Static validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q '^version=2.2.0$' WellImporter/metadata.txt
+          grep -q '^repository=https://github.com/SashaRai/WellImporter-QGIS$' WellImporter/metadata.txt
+          python -m py_compile WellImporter/*.py
+          python - <<'PY'
+          from pathlib import Path
+          import ast
+          import xml.etree.ElementTree as ET
+          root = Path('WellImporter')
+          files = sorted(root.glob('*.py'))
+          modules = {p.stem for p in files}
+          for path in files:
+              tree = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module:
+                      module = node.module.split('.')[0]
+                      if module not in modules:
+                          raise SystemExit(f'Missing module {module} imported by {path}')
+          for path in root.glob('*.ui'):
+              ET.parse(path)
+          print(f'Python modules checked: {len(files)}')
+          PY
+          find WellImporter -type d -name '__pycache__' -prune -exec rm -rf {} +
+          find WellImporter -type f -name '*.pyc' -delete
+
+      - name: Package validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          zip -qr WellImporter-v2.2.0.zip WellImporter
+          unzip -t WellImporter-v2.2.0.zip
+          python - <<'PY'
+          import zipfile
+          with zipfile.ZipFile('WellImporter-v2.2.0.zip') as zf:
+              names = zf.namelist()
+              assert {x.split('/',1)[0] for x in names if x} == {'WellImporter'}
+              assert 'WellImporter/__init__.py' in names
+              assert 'WellImporter/metadata.txt' in names
+              assert not any('__pycache__' in x or x.endswith('.pyc') for x in names)
+          PY
+          sha256sum WellImporter-v2.2.0.zip > WellImporter-v2.2.0.sha256.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WellImporter-v2.2.0-install
+          path: |
+            WellImporter-v2.2.0.zip
+            WellImporter-v2.2.0.sha256.txt
+          retention-days: 30
