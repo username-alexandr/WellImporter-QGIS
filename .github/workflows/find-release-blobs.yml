@@ -1,0 +1,40 @@
+name: Find expected release source blobs
+
+on:
+  push:
+    branches:
+      - chore/publish-releases-2.1.0
+    paths:
+      - '.github/workflows/find-release-blobs.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  find:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check expected Git blobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          shas=(
+            4bcc762e83eeffef7a60380d2f7a68e21b29f5b7
+            116051a764e02a3724151c5622d3916cf41eb2d1
+            4adae96dc6cc43ea4f6dcef169fbe15bf99d1c0a
+            6f1af39530167ff487bea40340387719415f12fe
+            38a3ade103390e35c4bd1a1f97674b631f9e08f4
+            e45c27e286a626f11da5ac4ef6962e238a975417
+            d6311bab27bbc051672df592c370110983f4adf6
+            32ea2f89c452129885ffc754298482ed66659872
+          )
+          for sha in "${shas[@]}"; do
+            if git cat-file -e "$sha^{blob}" 2>/dev/null; then
+              echo "FOUND $sha $(git cat-file -s "$sha")"
+            else
+              echo "MISSING $sha"
+            fi
+          done
