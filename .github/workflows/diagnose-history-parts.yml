@@ -1,0 +1,37 @@
+name: Diagnose historical archive parts
+
+on:
+  push:
+    branches:
+      - chore/bootstrap-historical-branches
+    paths:
+      - '.github/workflows/diagnose-history-parts.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect part inventory
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, base64
+          root = Path('history-bootstrap/parts')
+          files = sorted(p for p in root.iterdir() if p.is_file())
+          print('COUNT', len(files))
+          for p in files:
+              data = p.read_bytes()
+              print(p.name, len(data), hashlib.sha256(data).hexdigest(), data[:12].decode('ascii','replace'), data[-12:].decode('ascii','replace'))
+          joined = b''.join(p.read_bytes() for p in files)
+          print('SORTED_JOIN_LENGTH', len(joined))
+          try:
+              raw = base64.b64decode(joined, validate=True)
+              print('SORTED_BASE64_OK', len(raw), hashlib.sha256(raw).hexdigest())
+          except Exception as exc:
+              print('SORTED_BASE64_ERROR', repr(exc))
+          PY
