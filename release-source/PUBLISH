@@ -1,0 +1,4 @@
+publish=all
+historical=1.0.0..2.0.6
+current=2.1.0
+recovery=1
