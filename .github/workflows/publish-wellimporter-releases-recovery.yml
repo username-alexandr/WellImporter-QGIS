@@ -1,0 +1,281 @@
+name: Publish Well Importer releases with source recovery
+
+on:
+  push:
+    branches:
+      - chore/publish-releases-2.1.0
+    paths:
+      - release-source/PUBLISH
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout publishing branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Recover exact historical archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/wellimporter-release-work"
+          mkdir -p "$WORK/extracted" "$WORK/packages"
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, base64
+
+          root = Path('release-source')
+          work = Path(__import__('os').environ['RUNNER_TEMP']) / 'wellimporter-release-work'
+          expected_blob = {
+              3: '6f1af39530167ff487bea40340387719415f12fe',
+              5: 'e45c27e286a626f11da5ac4ef6962e238a975417',
+              6: 'd6311bab27bbc051672df592c370110983f4adf6',
+          }
+          expected_archive_sha = 'da10458fc389a1a143f1f71e8bcb37056c18b62a852292d53dfa8471f19c0bc4'
+
+          def read(path):
+              return path.read_text(encoding='ascii').strip()
+
+          def blob_sha(text):
+              raw = text.encode('ascii')
+              return hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
+
+          known = {
+              0: read(root/'chunks/chunk000'),
+              1: read(root/'chunks/chunk001'),
+              2: read(root/'chunks/chunk002'),
+              4: read(root/'chunks/chunk004'),
+              7: read(root/'chunks/chunk007'),
+          }
+          expected_known = {
+              0: '4bcc762e83eeffef7a60380d2f7a68e21b29f5b7',
+              1: '116051a764e02a3724151c5622d3916cf41eb2d1',
+              2: '4adae96dc6cc43ea4f6dcef169fbe15bf99d1c0a',
+              4: '38a3ade103390e35c4bd1a1f97674b631f9e08f4',
+              7: '32ea2f89c452129885ffc754298482ed66659872',
+          }
+          for idx, text in known.items():
+              got = blob_sha(text)
+              if got != expected_known[idx]:
+                  raise SystemExit(f'Known chunk {idx} has unexpected blob SHA {got}')
+
+          pieces = []
+          for folder in (root/'chunks', root/'fixed'):
+              if folder.exists():
+                  for p in sorted(folder.iterdir()):
+                      if p.is_file():
+                          pieces.append((str(p), read(p)))
+
+          current_concat = ''.join(read(root/'chunks'/f'chunk{i:03d}') for i in range(8))
+          pools = [(name, text) for name, text in pieces]
+          pools.append(('current-concat', current_concat))
+          pools.append(('all-files-concat', ''.join(text for _, text in pieces)))
+
+          def find_full(target, n=16000):
+              for name, text in pools:
+                  if len(text) < n:
+                      continue
+                  for off in range(0, len(text)-n+1):
+                      cand = text[off:off+n]
+                      if blob_sha(cand) == target:
+                          print(f'RECOVERED full target {target} from {name} offset {off}')
+                          return cand
+              return None
+
+          recovered = dict(known)
+          for idx in (5, 6):
+              cand = find_full(expected_blob[idx])
+              if cand is None:
+                  raise SystemExit(f'Could not recover chunk {idx} from uploaded corpus')
+              recovered[idx] = cand
+
+          prefix3 = read(root/'fixed/chunk003_0') + read(root/'fixed/chunk003_1')
+          if len(prefix3) != 8000:
+              raise SystemExit(f'chunk003 fixed prefix length is {len(prefix3)}, expected 8000')
+          cand3 = find_full(expected_blob[3])
+          if cand3 is None:
+              for name, text in pools:
+                  if len(text) < 8000:
+                      continue
+                  for off in range(0, len(text)-8000+1):
+                      cand = prefix3 + text[off:off+8000]
+                      if blob_sha(cand) == expected_blob[3]:
+                          print(f'RECOVERED chunk3 suffix from {name} offset {off}')
+                          cand3 = cand
+                          break
+                  if cand3 is not None:
+                      break
+          if cand3 is None:
+              raise SystemExit('Could not recover chunk 3 from uploaded corpus')
+          recovered[3] = cand3
+
+          assembled = ''.join(recovered[i] for i in range(8))
+          if len(assembled) != 121576:
+              raise SystemExit(f'Base64 length {len(assembled)} != 121576')
+          try:
+              raw = base64.b64decode(assembled, validate=True)
+          except Exception as exc:
+              raise SystemExit(f'Recovered base64 is invalid: {exc}')
+          got = hashlib.sha256(raw).hexdigest()
+          print('Recovered archive SHA256:', got)
+          if got != expected_archive_sha:
+              raise SystemExit(f'Archive SHA mismatch: {got}')
+          (work/'history.tar.xz').write_bytes(raw)
+          PY
+          xz -t "$WORK/history.tar.xz"
+          tar -xJf "$WORK/history.tar.xz" -C "$WORK/extracted"
+          HIST="$WORK/extracted/release_source_history"
+          test -d "$HIST"
+          count=$(find "$HIST" -mindepth 2 -maxdepth 2 -name metadata.txt | wc -l)
+          echo "Historical metadata files: $count"
+          test "$count" -eq 26
+
+      - name: Publish historical archive branches and Releases
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/wellimporter-release-work"
+          HIST="$WORK/extracted/release_source_history"
+          PACKAGES="$WORK/packages"
+          VERSIONS=(
+            1.0.0 1.1.0 1.2.0 1.3.0
+            1.4.0 1.4.1 1.4.2 1.4.3 1.4.4
+            1.5.0 1.5.1 1.5.2 1.5.3 1.5.4 1.5.5 1.5.6
+            1.6.0 1.7.0 1.8.0
+            2.0.0 2.0.1 2.0.2 2.0.3 2.0.4 2.0.5 2.0.6
+          )
+          git config user.name "SashaRai"
+          git config user.email "56488397+SashaRai@users.noreply.github.com"
+
+          for version in "${VERSIONS[@]}"; do
+            echo "=== v$version ==="
+            src="$HIST/$version/WellImporter"
+            test -f "$src/metadata.txt"
+            test -f "$src/__init__.py"
+            stage="$WORK/stage-$version"
+            rm -rf "$stage" && mkdir -p "$stage"
+            cp -a "$src" "$stage/WellImporter"
+            find "$stage/WellImporter" -type d -name '__pycache__' -prune -exec rm -rf {} + || true
+            find "$stage/WellImporter" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete || true
+            zip_path="$PACKAGES/WellImporter-v$version.zip"
+            rm -f "$zip_path"
+            (cd "$stage" && zip -qr "$zip_path" WellImporter)
+            unzip -tq "$zip_path"
+            test "$(unzip -Z1 "$zip_path" | cut -d/ -f1 | sort -u)" = "WellImporter"
+            unzip -Z1 "$zip_path" | grep -qx 'WellImporter/metadata.txt'
+            unzip -Z1 "$zip_path" | grep -qx 'WellImporter/__init__.py'
+
+            git switch --detach origin/main >/dev/null 2>&1
+            tmp_branch="release-snapshot-$version"
+            git branch -D "$tmp_branch" >/dev/null 2>&1 || true
+            git switch --orphan "$tmp_branch" >/dev/null 2>&1
+            git rm -rf . >/dev/null 2>&1 || true
+            git clean -fdx >/dev/null 2>&1 || true
+            cp -a "$stage/WellImporter" ./WellImporter
+            cat > RELEASE.md <<EOF
+          # Well Importer $version
+
+          Исторический снимок Well Importer $version.
+
+          - Ветка: \`archive/v$version\`
+          - Тег: \`v$version\`
+          - Актуальная версия находится в \`main\`.
+          - Не сливать архивную ветку в \`main\`.
+          EOF
+            git add WellImporter RELEASE.md
+            git commit -m "archive: Well Importer $version" -m "Preserve source snapshot for release v$version." >/dev/null
+            sha=$(git rev-parse HEAD)
+            git push --force origin "HEAD:refs/heads/archive/v$version"
+            git tag -f "v$version" "$sha"
+            git push --force origin "refs/tags/v$version"
+
+            notes="Исторический релиз Well Importer $version. Для установки в QGIS скачайте WellImporter-v$version.zip и выберите Плагины → Управление плагинами → Установить из ZIP. Исходный код сохранён в archive/v$version."
+            if gh release view "v$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh release upload "v$version" "$zip_path" --clobber --repo "$GITHUB_REPOSITORY"
+              gh release edit "v$version" --title "Well Importer $version" --notes "$notes" --repo "$GITHUB_REPOSITORY"
+            else
+              gh release create "v$version" "$zip_path" --title "Well Importer $version" --notes "$notes" --repo "$GITHUB_REPOSITORY"
+            fi
+          done
+
+      - name: Publish current v2.1.0 from main
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/wellimporter-release-work"
+          PACKAGES="$WORK/packages"
+          git fetch origin main
+          git switch --detach origin/main
+          grep -q '^version=2.1.0$' WellImporter/metadata.txt
+          grep -q '^repository=https://github.com/SashaRai/WellImporter-QGIS$' WellImporter/metadata.txt
+          stage="$WORK/stage-2.1.0"
+          rm -rf "$stage" && mkdir -p "$stage"
+          cp -a WellImporter "$stage/WellImporter"
+          find "$stage/WellImporter" -type d -name '__pycache__' -prune -exec rm -rf {} + || true
+          find "$stage/WellImporter" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete || true
+          zip_path="$PACKAGES/WellImporter-v2.1.0.zip"
+          (cd "$stage" && zip -qr "$zip_path" WellImporter)
+          unzip -tq "$zip_path"
+          test "$(unzip -Z1 "$zip_path" | cut -d/ -f1 | sort -u)" = "WellImporter"
+          unzip -Z1 "$zip_path" | grep -qx 'WellImporter/metadata.txt'
+          unzip -Z1 "$zip_path" | grep -qx 'WellImporter/__init__.py'
+          main_sha=$(git rev-parse origin/main)
+          git tag -f v2.1.0 "$main_sha"
+          git push --force origin refs/tags/v2.1.0
+          cat > "$WORK/notes-2.1.0.md" <<'EOF'
+          Актуальный стабильный релиз Well Importer 2.1.0.
+
+          Основные изменения:
+          - полный аудит проекта одной кнопкой и мастер исправления;
+          - интерактивный список ошибок и последовательный обход проблем;
+          - автоматическое создание отсутствующих кругов и контроль «1 точка = 1 круг»;
+          - критическая проверка несовпадения номеров точки и круга;
+          - автоматические земельные участки и кадастровые номера;
+          - интерактивная статистика;
+          - новый мастер выезда, фоновые карты, офлайн-пакет и обратная синхронизация;
+          - автономная HTML-карта и режим «Полный рабочий цикл».
+
+          Для установки скачайте `WellImporter-v2.1.0.zip` и используйте «Плагины → Управление плагинами → Установить из ZIP».
+          EOF
+          if gh release view v2.1.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload v2.1.0 "$zip_path" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit v2.1.0 --title "Well Importer 2.1.0" --notes-file "$WORK/notes-2.1.0.md" --latest --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create v2.1.0 "$zip_path" --title "Well Importer 2.1.0" --notes-file "$WORK/notes-2.1.0.md" --latest --repo "$GITHUB_REPOSITORY"
+          fi
+
+      - name: Verify published Releases
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=(
+            v1.0.0 v1.1.0 v1.2.0 v1.3.0
+            v1.4.0 v1.4.1 v1.4.2 v1.4.3 v1.4.4
+            v1.5.0 v1.5.1 v1.5.2 v1.5.3 v1.5.4 v1.5.5 v1.5.6
+            v1.6.0 v1.7.0 v1.8.0
+            v2.0.0 v2.0.1 v2.0.2 v2.0.3 v2.0.4 v2.0.5 v2.0.6 v2.1.0
+          )
+          actual=$(gh api --paginate "/repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name' | sort)
+          for tag in "${expected[@]}"; do
+            echo "$actual" | grep -qx "$tag"
+            test "$(gh api "/repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq '.assets | length')" -ge 1
+          done
+          count=$(printf '%s\n' "$actual" | grep -c '^v')
+          echo "Published releases: $count"
+          test "$count" -ge 27
+          test "$(gh api "/repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')" = 'v2.1.0'
+
+      - name: Upload current QGIS ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WellImporter-v2.1.0-QGIS
+          path: ${{ runner.temp }}/wellimporter-release-work/packages/WellImporter-v2.1.0.zip
+          if-no-files-found: error
+          retention-days: 30
