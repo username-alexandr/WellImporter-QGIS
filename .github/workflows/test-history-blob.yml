@@ -1,0 +1,33 @@
+name: Test historical source blob
+
+on:
+  push:
+    branches:
+      - chore/publish-releases-2.1.0
+    paths:
+      - '.github/workflows/test-history-blob.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate historical tar.xz from repository history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show 8c58f48c6cd1f1276f3150f21a1d4bc56b25bb76:archive/WellImporter_source_history_1.0.0_to_2.0.5.tar.xz > "$RUNNER_TEMP/history.tar.xz"
+          ls -l "$RUNNER_TEMP/history.tar.xz"
+          sha256sum "$RUNNER_TEMP/history.tar.xz"
+          xz -t "$RUNNER_TEMP/history.tar.xz"
+          mkdir -p "$RUNNER_TEMP/history"
+          tar -xJf "$RUNNER_TEMP/history.tar.xz" -C "$RUNNER_TEMP/history"
+          find "$RUNNER_TEMP/history" -mindepth 1 -maxdepth 2 -type d | sort
+          count=$(find "$RUNNER_TEMP/history" -name metadata.txt | wc -l)
+          echo "METADATA_COUNT=$count"
+          test "$count" -eq 25
