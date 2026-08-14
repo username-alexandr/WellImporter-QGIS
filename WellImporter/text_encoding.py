@@ -2,11 +2,16 @@
 
 """Безопасное декодирование текстовых таблиц CSV/TXT.
 
-Отдельный модуль не зависит от QGIS, поэтому код определения кодировки можно
-проверять обычными unit-тестами. Особое внимание уделено UTF-16 без BOM:
-такие файлы нередко создаются Excel и при ошибочном чтении как UTF-8 содержат
-технические NUL-символы, из-за которых ``csv.reader`` выдаёт ``line contains NUL``.
+Модуль не зависит от QGIS, поэтому определение кодировки проверяется обычными
+unit-тестами. Особое внимание уделено UTF-16 без BOM: такие файлы нередко
+создаются Excel и при ошибочном чтении как UTF-8 содержат технические
+NUL-символы, из-за которых ``csv.reader`` выдаёт ``line contains NUL``.
 """
+
+RUSSIAN_LETTERS = set(
+    "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
+    "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
+)
 
 
 def decode_table_bytes(raw):
@@ -17,8 +22,7 @@ def decode_table_bytes(raw):
     2. UTF-16 BOM;
     3. UTF-16 LE/BE без BOM;
     4. UTF-8;
-    5. Windows-1251;
-    6. CP866.
+    5. Windows-1251 / CP866 по оценке правдоподобия текста.
     """
     if not isinstance(raw, (bytes, bytearray)):
         raise TypeError("Ожидалась последовательность байтов.")
@@ -37,19 +41,18 @@ def decode_table_bytes(raw):
     if utf16_text is not None:
         return _clean_text(utf16_text)
 
-    errors = []
-    for encoding in ("utf-8", "cp1251", "cp866"):
-        try:
-            return _clean_text(raw.decode(encoding))
-        except UnicodeDecodeError as exc:
-            errors.append(f"{encoding}: {exc}")
-
-    raise ValueError(
-        "Не удалось прочитать CSV/TXT-файл. Поддерживаются UTF-8, UTF-16, "
-        "Windows-1251 и CP866.\n"
-        "Попробуйте пересохранить файл из Excel в формате CSV UTF-8.\n\n"
-        + "\n".join(errors)
-    )
+    try:
+        return _clean_text(raw.decode("utf-8"))
+    except UnicodeDecodeError as utf8_error:
+        single_byte = _decode_legacy_cyrillic(raw)
+        if single_byte is not None:
+            return _clean_text(single_byte)
+        raise ValueError(
+            "Не удалось прочитать CSV/TXT-файл. Поддерживаются UTF-8, UTF-16, "
+            "Windows-1251 и CP866.\n"
+            "Попробуйте пересохранить файл из Excel в формате CSV UTF-8.\n\n"
+            f"utf-8: {utf8_error}"
+        )
 
 
 def _decode_utf16_without_bom(raw):
@@ -73,6 +76,49 @@ def _decode_utf16_without_bom(raw):
 
     candidates.sort(key=lambda item: item[0], reverse=True)
     return candidates[0][1]
+
+
+def _decode_legacy_cyrillic(raw):
+    """Выбирает между Windows-1251 и CP866 по качеству русского текста."""
+    candidates = []
+    for encoding in ("cp1251", "cp866"):
+        try:
+            text = raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        candidates.append((_legacy_text_score(text), text, encoding))
+
+    if not candidates:
+        return None
+
+    # При равной оценке сохраняем приоритет Windows-1251 как более типичной
+    # кодировки CSV из русской версии Excel.
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def _legacy_text_score(text):
+    """Оценивает однобайтовую декодировку по русским и служебным символам."""
+    russian = sum(1 for ch in text if ch in RUSSIAN_LETTERS)
+    foreign_cyrillic = sum(
+        1 for ch in text
+        if "\u0400" <= ch <= "\u04ff" and ch not in RUSSIAN_LETTERS
+    )
+    box_drawing = sum(1 for ch in text if "\u2500" <= ch <= "\u257f")
+    odd_spaces = text.count("\u00a0")
+    replacement = text.count("\ufffd")
+    delimiters = sum(text.count(delimiter) for delimiter in (";", ",", "\t"))
+    line_breaks = text.count("\n") + text.count("\r")
+
+    return (
+        russian * 4.0
+        + delimiters * 1.5
+        + line_breaks
+        - foreign_cyrillic * 6.0
+        - box_drawing * 8.0
+        - odd_spaces * 3.0
+        - replacement * 20.0
+    )
 
 
 def _table_text_score(text):
