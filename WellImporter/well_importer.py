@@ -4,7 +4,7 @@ import os
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction, QMessageBox
 
-from .well_importer_dialog import WellImporterDialog
+from .well_importer_dialog_v222 import WellImporterDialogV222 as WellImporterDialog
 from .history_dialog import HistoryDialog
 from .controller import ImportController
 from .basemap_catalog import BasemapCatalog
