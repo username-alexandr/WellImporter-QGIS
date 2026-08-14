@@ -38,6 +38,7 @@ jobs:
           python -m py_compile WellImporter/*.py
           python tests/test_well_number_field_resolver.py
           python tests/test_spatial_pairing.py
+          python tests/test_text_encoding.py
           python - <<'PY'
           from pathlib import Path
           import ast
@@ -80,6 +81,8 @@ jobs:
               assert 'WellImporter/metadata.txt' in names
               assert 'WellImporter/spatial_pairing.py' in names
               assert 'WellImporter/spatial_circle_repair.py' in names
+              assert 'WellImporter/text_encoding.py' in names
+              assert 'WellImporter/robust_file_importer.py' in names
               assert 'WellImporter/well_importer_dialog_v222.py' in names
               assert not any('__pycache__' in x or x.endswith(('.pyc', '.pyo')) for x in names)
           PY
