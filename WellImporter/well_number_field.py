@@ -14,26 +14,91 @@ def _normalize(value):
 
 
 def _looks_like_well_number(value):
+    """Распознаёт физические имена и отображаемые псевдонимы номера скважины."""
     value = _normalize(value)
     exact = {
-        "номерскважины", "номерскваж", "номерскв", "номскважины", "номскв",
-        "скважина", "wellnumber", "wellno", "wellid"
+        "номерскважины", "номерскваж", "номерскв", "номерсква",
+        "номскважины", "номскваж", "номскв", "номсква", "скважина",
+        "nomerskvazhiny", "nomerskvazh", "nomerskv", "nomskvazhiny",
+        "nomskvazh", "nomskv", "skvazhina", "wellnumber", "wellno", "wellid",
     }
     if value in exact:
         return True
-    has_well = "скваж" in value or "скв" in value or "well" in value
-    has_number = "номер" in value or value.startswith(("nom", "no", "id"))
+
+    # DBF/Shapefile и некоторые провайдеры могут усекать физическое имя поля.
+    if value.startswith(("номерсква", "номсква", "nomerskva", "nomskva")):
+        return True
+
+    has_well = (
+        "скваж" in value
+        or "скв" in value
+        or "skvazh" in value
+        or "skv" in value
+        or "well" in value
+    )
+    has_number = (
+        "номер" in value
+        or value.startswith(("nomer", "nom", "no", "id"))
+    )
     return bool(value and has_well and has_number)
+
+
+def _field_labels(layer, index, field):
+    """
+    Возвращает все доступные названия поля.
+
+    QGIS хранит псевдоним поля на уровне QgsVectorLayer. Поэтому одного
+    ``QgsField.alias()`` недостаточно: в таблице пользователь может видеть
+    «Номер скважины», хотя физическое имя источника другое или усечённое.
+    """
+    labels = []
+
+    try:
+        labels.append(field.name())
+    except Exception:
+        pass
+
+    try:
+        alias_method = getattr(field, "alias", None)
+        if callable(alias_method):
+            labels.append(alias_method())
+    except Exception:
+        pass
+
+    for method_name in ("fieldAlias", "attributeDisplayName"):
+        try:
+            method = getattr(layer, method_name, None)
+            if callable(method):
+                labels.append(method(index))
+        except Exception:
+            pass
+
+    result = []
+    seen = set()
+    for label in labels:
+        text = str(label or "").strip()
+        key = _normalize(text)
+        if text and key not in seen:
+            result.append(text)
+            seen.add(key)
+    return result
 
 
 def well_number_field_index(layer):
     fields = layer.fields()
+
+    # Сначала сохраняем быстрый путь для физического имени ровно
+    # «Номер скважины».
     exact = fields.indexFromName(DISPLAY_NAME)
     if exact >= 0:
         return exact
+
+    # Затем проверяем не только QgsField, но и псевдонимы, сохранённые
+    # непосредственно в настройках слоя QGIS.
     for index, field in enumerate(fields):
-        if _looks_like_well_number(field.name()) or _looks_like_well_number(field.alias()):
-            return index
+        for label in _field_labels(layer, index, field):
+            if _looks_like_well_number(label):
+                return index
     return -1
 
 

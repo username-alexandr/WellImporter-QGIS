@@ -1,9 +1,10 @@
-name: Validate Well Importer 2.2
+name: Validate Well Importer
 
 on:
   push:
     branches:
-      - feature/route-and-productivity-2.2.0
+      - "feature/**"
+      - "fix/**"
   pull_request:
     branches:
       - main
@@ -17,13 +18,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Read plugin version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(sed -n 's/^version=//p' WellImporter/metadata.txt | head -n 1)"
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Invalid plugin version: $VERSION" >&2
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Plugin version: $VERSION"
+
       - name: Static validation
         shell: bash
         run: |
           set -euo pipefail
-          grep -q '^version=2.2.0$' WellImporter/metadata.txt
           grep -q '^repository=https://github.com/SashaRai/WellImporter-QGIS$' WellImporter/metadata.txt
           python -m py_compile WellImporter/*.py
+          python tests/test_well_number_field_resolver.py
           python - <<'PY'
           from pathlib import Path
           import ast
@@ -44,28 +57,34 @@ jobs:
           PY
           find WellImporter -type d -name '__pycache__' -prune -exec rm -rf {} +
           find WellImporter -type f -name '*.pyc' -delete
+          find tests -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true
+          find tests -type f -name '*.pyc' -delete 2>/dev/null || true
 
       - name: Package validation
         shell: bash
         run: |
           set -euo pipefail
-          zip -qr WellImporter-v2.2.0.zip WellImporter
-          unzip -t WellImporter-v2.2.0.zip
-          python - <<'PY'
+          ZIP="WellImporter-v${VERSION}.zip"
+          SHA="WellImporter-v${VERSION}.sha256.txt"
+          zip -qr "$ZIP" WellImporter
+          unzip -t "$ZIP"
+          ZIP="$ZIP" python - <<'PY'
+          import os
           import zipfile
-          with zipfile.ZipFile('WellImporter-v2.2.0.zip') as zf:
+          path = os.environ['ZIP']
+          with zipfile.ZipFile(path) as zf:
               names = zf.namelist()
               assert {x.split('/',1)[0] for x in names if x} == {'WellImporter'}
               assert 'WellImporter/__init__.py' in names
               assert 'WellImporter/metadata.txt' in names
-              assert not any('__pycache__' in x or x.endswith('.pyc') for x in names)
+              assert not any('__pycache__' in x or x.endswith(('.pyc', '.pyo')) for x in names)
           PY
-          sha256sum WellImporter-v2.2.0.zip > WellImporter-v2.2.0.sha256.txt
+          sha256sum "$ZIP" > "$SHA"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: WellImporter-v2.2.0-install
+          name: WellImporter-v${{ env.VERSION }}-install
           path: |
-            WellImporter-v2.2.0.zip
-            WellImporter-v2.2.0.sha256.txt
+            WellImporter-v${{ env.VERSION }}.zip
+            WellImporter-v${{ env.VERSION }}.sha256.txt
           retention-days: 30
