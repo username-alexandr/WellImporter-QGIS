@@ -37,6 +37,7 @@ jobs:
           grep -q '^repository=https://github.com/SashaRai/WellImporter-QGIS$' WellImporter/metadata.txt
           python -m py_compile WellImporter/*.py
           python tests/test_well_number_field_resolver.py
+          python tests/test_spatial_pairing.py
           python - <<'PY'
           from pathlib import Path
           import ast
@@ -77,6 +78,9 @@ jobs:
               assert {x.split('/',1)[0] for x in names if x} == {'WellImporter'}
               assert 'WellImporter/__init__.py' in names
               assert 'WellImporter/metadata.txt' in names
+              assert 'WellImporter/spatial_pairing.py' in names
+              assert 'WellImporter/spatial_circle_repair.py' in names
+              assert 'WellImporter/well_importer_dialog_v222.py' in names
               assert not any('__pycache__' in x or x.endswith(('.pyc', '.pyo')) for x in names)
           PY
           sha256sum "$ZIP" > "$SHA"
