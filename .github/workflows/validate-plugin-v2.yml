@@ -61,6 +61,9 @@ jobs:
           dialog_text = (root / 'well_importer_dialog_v224.py').read_text(encoding='utf-8')
           assert 'RobustExcelFileImporter' in dialog_text, '2.2.3 CSV fix is not wired into 2.2.4 dialog'
           assert 'ImportControllerV224' in dialog_text, '2.2.4 controller is not wired into dialog'
+          controller_text = (root / 'controller_v224.py').read_text(encoding='utf-8')
+          assert 'ParcelGroupManagerV224' in controller_text, 'hardened parcel group manager is not active'
+          assert 'SpatialCircleRepairManager' in controller_text, '2.2.2 circle repair fix is not active'
           print(f'Python modules checked: {len(files)}')
           PY
           find WellImporter -type d -name '__pycache__' -prune -exec rm -rf {} +
@@ -89,6 +92,7 @@ jobs:
               'WellImporter/robust_file_importer.py',
               'WellImporter/parcel_group_logic.py',
               'WellImporter/parcel_group_manager.py',
+              'WellImporter/parcel_group_manager_v224.py',
               'WellImporter/controller_v224.py',
               'WellImporter/control_center_v224.py',
               'WellImporter/well_importer_dialog_v224.py',
