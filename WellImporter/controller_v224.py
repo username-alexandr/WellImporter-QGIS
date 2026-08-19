@@ -3,7 +3,7 @@
 from qgis.core import QgsProject
 
 from .controller import ImportController
-from .parcel_group_manager import ParcelGroupManager
+from .parcel_group_manager_v224 import ParcelGroupManagerV224
 from .settings import PluginSettings
 from .spatial_circle_repair import SpatialCircleRepairManager
 
@@ -15,7 +15,7 @@ class ImportControllerV224(ImportController):
         super().__init__(iface)
         # Сохраняем runtime-исправление 2.2.2 независимо от старой цепочки UI.
         self.circle_repair = SpatialCircleRepairManager()
-        self.parcels = ParcelGroupManager(self.project)
+        self.parcels = ParcelGroupManagerV224(self.project)
         self.settings_v224 = PluginSettings()
         self._field_parcel_selection_layer_id = ""
 
