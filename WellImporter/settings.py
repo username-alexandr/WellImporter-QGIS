@@ -58,6 +58,10 @@ class PluginSettings:
     def cadastral_field(self):
         return self.settings.value(f"{self.PREFIX}/cadastral_field", "", type=str)
 
+    def parcel_group_path(self):
+        """Путь выбранной группы земельных участков в дереве слоёв QGIS."""
+        return self.settings.value(f"{self.PREFIX}/parcel_group_path", "", type=str)
+
     def save(self, year, area, point_layer_name, polygon_layer_name, skip_duplicates=True,
              coordinate_mode="AUTO", source_crs="EPSG:4326", auto_current_year=True):
         self.settings.setValue(f"{self.PREFIX}/year", int(year))
@@ -83,6 +87,10 @@ class PluginSettings:
         self.settings.setValue(f"{self.PREFIX}/parcel_layer_name", str(layer_name or ""))
         self.settings.setValue(f"{self.PREFIX}/parcel_label_field", str(label_field or ""))
         self.settings.setValue(f"{self.PREFIX}/cadastral_field", str(cadastral_field or ""))
+
+    def set_parcel_group_path(self, group_path):
+        self.settings.setValue(f"{self.PREFIX}/parcel_group_path", str(group_path or "").strip())
+        self.settings.sync()
 
     def _bool(self, key, default):
         value = self.settings.value(key, default)

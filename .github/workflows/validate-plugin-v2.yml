@@ -34,11 +34,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          grep -q '^repository=https://github.com/SashaRai/WellImporter-QGIS$' WellImporter/metadata.txt
+          grep -q '^repository=https://github.com/username-alexandr/WellImporter-QGIS$' WellImporter/metadata.txt
           python -m py_compile WellImporter/*.py
           python tests/test_well_number_field_resolver.py
           python tests/test_spatial_pairing.py
           python tests/test_text_encoding.py
+          python tests/test_parcel_group_logic.py
           python - <<'PY'
           from pathlib import Path
           import ast
@@ -55,6 +56,14 @@ jobs:
                           raise SystemExit(f'Missing module {module} imported by {path}')
           for path in root.glob('*.ui'):
               ET.parse(path)
+          init_text = (root / '__init__.py').read_text(encoding='utf-8')
+          assert 'well_importer_v224_interface' in init_text, '2.2.4 interface is not active in classFactory'
+          dialog_text = (root / 'well_importer_dialog_v224.py').read_text(encoding='utf-8')
+          assert 'RobustExcelFileImporter' in dialog_text, '2.2.3 CSV fix is not wired into 2.2.4 dialog'
+          assert 'ImportControllerV224' in dialog_text, '2.2.4 controller is not wired into dialog'
+          controller_text = (root / 'controller_v224.py').read_text(encoding='utf-8')
+          assert 'ParcelGroupManagerV224' in controller_text, 'hardened parcel group manager is not active'
+          assert 'SpatialCircleRepairManager' in controller_text, '2.2.2 circle repair fix is not active'
           print(f'Python modules checked: {len(files)}')
           PY
           find WellImporter -type d -name '__pycache__' -prune -exec rm -rf {} +
@@ -74,16 +83,26 @@ jobs:
           import os
           import zipfile
           path = os.environ['ZIP']
+          required = {
+              'WellImporter/__init__.py',
+              'WellImporter/metadata.txt',
+              'WellImporter/spatial_pairing.py',
+              'WellImporter/spatial_circle_repair.py',
+              'WellImporter/text_encoding.py',
+              'WellImporter/robust_file_importer.py',
+              'WellImporter/parcel_group_logic.py',
+              'WellImporter/parcel_group_manager.py',
+              'WellImporter/parcel_group_manager_v224.py',
+              'WellImporter/controller_v224.py',
+              'WellImporter/control_center_v224.py',
+              'WellImporter/well_importer_dialog_v224.py',
+              'WellImporter/well_importer_v224_interface.py',
+          }
           with zipfile.ZipFile(path) as zf:
-              names = zf.namelist()
+              names = set(zf.namelist())
               assert {x.split('/',1)[0] for x in names if x} == {'WellImporter'}
-              assert 'WellImporter/__init__.py' in names
-              assert 'WellImporter/metadata.txt' in names
-              assert 'WellImporter/spatial_pairing.py' in names
-              assert 'WellImporter/spatial_circle_repair.py' in names
-              assert 'WellImporter/text_encoding.py' in names
-              assert 'WellImporter/robust_file_importer.py' in names
-              assert 'WellImporter/well_importer_dialog_v222.py' in names
+              missing = sorted(required - names)
+              assert not missing, f'Missing required files: {missing}'
               assert not any('__pycache__' in x or x.endswith(('.pyc', '.pyo')) for x in names)
           PY
           sha256sum "$ZIP" > "$SHA"
