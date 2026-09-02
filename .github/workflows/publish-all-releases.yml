@@ -1,0 +1,196 @@
+name: Publish all Well Importer releases
+
+on:
+  push:
+    branches:
+      - chore/publish-releases-2.2.3-v2
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Publish v1.0.0 through v2.2.2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "username-alexandr"
+          git config user.email "56488397+username-alexandr@users.noreply.github.com"
+
+          HISTORY_COMMIT="8c58f48c6cd1f1276f3150f21a1d4bc56b25bb76"
+          HISTORY_FILE="archive/WellImporter_source_history_1.0.0_to_2.0.5.tar.xz"
+          HISTORY_ROOT="${RUNNER_TEMP}/history"
+          ASSET_ROOT="${RUNNER_TEMP}/assets"
+          SOURCE_ROOT="${RUNNER_TEMP}/sources"
+          mkdir -p "$HISTORY_ROOT" "$ASSET_ROOT" "$SOURCE_ROOT"
+
+          git show "${HISTORY_COMMIT}:${HISTORY_FILE}" > "${RUNNER_TEMP}/history.tar.xz"
+          tar -xJf "${RUNNER_TEMP}/history.tar.xz" -C "$HISTORY_ROOT"
+          EARLY_ROOT="${HISTORY_ROOT}/WellImporter_history_1.0.0_to_2.0.5"
+
+          EARLY_VERSIONS=(
+            1.0.0 1.1.0 1.2.0 1.3.0
+            1.4.0 1.4.1 1.4.2 1.4.3 1.4.4
+            1.5.0 1.5.1 1.5.2 1.5.3 1.5.4 1.5.5 1.5.6
+            1.6.0 1.7.0 1.8.0
+            2.0.0 2.0.1 2.0.2 2.0.3 2.0.4 2.0.5
+          )
+          BRANCH_VERSIONS=(2.0.6 2.1.0 2.2.0 2.2.1 2.2.2)
+          ALL_VERSIONS=("${EARLY_VERSIONS[@]}" "${BRANCH_VERSIONS[@]}")
+
+          make_snapshot_commit() {
+            local src="$1"
+            local version="$2"
+            local index="${RUNNER_TEMP}/index-${version}"
+            rm -f "$index"
+            GIT_INDEX_FILE="$index" git read-tree --empty
+            GIT_INDEX_FILE="$index" git --git-dir="$GITHUB_WORKSPACE/.git" --work-tree="$src" add -f -A
+            local tree
+            tree="$(GIT_INDEX_FILE="$index" git write-tree)"
+            printf 'archive: Well Importer %s\n' "$version" | git commit-tree "$tree"
+          }
+
+          release_summary() {
+            case "$1" in
+              1.0.0) echo "Первая сохранённая версия Well Importer." ;;
+              1.1.0) echo "Раннее исправление импорта и структуры плагина." ;;
+              1.2.0) echo "Исправлена загрузка плагина через classFactory." ;;
+              1.3.0) echo "Добавлены улучшения интерфейса и справки." ;;
+              1.4.0) echo "Обновлены metadata, интерфейс и комментарии. Исторический исходный ZIP имел лишний внешний каталог; Release ZIP нормализован для установки." ;;
+              1.4.1) echo "Исправлена структура установочного ZIP. Исторически metadata.txt этой сборки всё ещё содержит version=1.4.0; snapshot не переписывался задним числом." ;;
+              1.4.2) echo "Очищен changelog и подготовлена корректная историческая сборка." ;;
+              1.4.3) echo "Убрано отображение разработчика в основном окне плагина." ;;
+              1.4.4) echo "Исправлены всплывающие подсказки интерфейса." ;;
+              1.5.0) echo "Добавлен импорт из буфера и файлов Excel." ;;
+              1.5.1) echo "Обновлена инструкция по импорту." ;;
+              1.5.2) echo "Исправлена фиксация изменений рабочих слоёв после импорта." ;;
+              1.5.3) echo "Инструкция оставлена только в верхнем меню Well Importer." ;;
+              1.5.4) echo "Исправлена геометрия площадного круга: круг строится относительно центра скважины без овального искажения." ;;
+              1.5.5) echo "Нормативная площадь площадного круга исправлена на 33 га (330 000 м²)." ;;
+              1.5.6) echo "Улучшено чтение текстовых файлов в разных кодировках." ;;
+              1.6.0) echo "Добавлены предпросмотр, история партий и контроль качества импорта." ;;
+              1.7.0) echo "Добавлены архивирование и подготовка выездного экспорта." ;;
+              1.8.0) echo "Добавлены интеллектуальные дубли, DD/DMS/UTM и мастер подготовки полей." ;;
+              2.0.0) echo "Добавлен единый Центр управления Well Importer." ;;
+              2.0.1) echo "Улучшен адаптивный интерфейс Центра управления." ;;
+              2.0.2) echo "Исправлена синхронизация атрибутов рабочих объектов." ;;
+              2.0.3) echo "Исправлена работа номера скважины и поля оросительной системы." ;;
+              2.0.4) echo "Переход на единое логическое поле «Номер скважины»." ;;
+              2.0.5) echo "Убрана видимая ручная миграция WI_NUM, сохранена автоматическая совместимость." ;;
+              2.0.6) echo "Исправлен перенос номера в площадной круг и добавлено управление профилями из выпадающего списка." ;;
+              2.1.0) echo "Добавлены полный аудит, мастер исправления, статистика, выездные пакеты, синхронизация, HTML-карты и полный рабочий цикл." ;;
+              2.2.0) echo "Добавлены нормализация координат, карантин строк, маршрутизация, GPX/GPS, командная палитра, горячие клавиши и режимы интерфейса." ;;
+              2.2.1) echo "Исправлено распознавание поля «Номер скважины» по физическому имени и псевдонимам QGIS." ;;
+              2.2.2) echo "Исправлена достройка отсутствующих площадных кругов: пары определяются пространственно 1:1." ;;
+              *) echo "Исторический релиз Well Importer." ;;
+            esac
+          }
+
+          prepare_source() {
+            local version="$1"
+            local dest="${SOURCE_ROOT}/${version}"
+            rm -rf "$dest"
+            mkdir -p "$dest"
+
+            if printf '%s\n' "${EARLY_VERSIONS[@]}" | grep -Fxq "$version"; then
+              cp -a "${EARLY_ROOT}/${version}/WellImporter" "$dest/WellImporter"
+            else
+              git fetch origin "archive/v${version}:refs/remotes/origin/archive/v${version}"
+              git archive "origin/archive/v${version}" WellImporter | tar -x -C "$dest"
+            fi
+
+            test -f "$dest/WellImporter/__init__.py"
+            test -f "$dest/WellImporter/metadata.txt"
+            printf '%s' "$dest"
+          }
+
+          create_tag_if_needed() {
+            local version="$1"
+            local src="$2"
+            local tag="v${version}"
+
+            if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+              echo "Tag ${tag} already exists"
+              return
+            fi
+
+            local target
+            if printf '%s\n' "${EARLY_VERSIONS[@]}" | grep -Fxq "$version"; then
+              target="$(make_snapshot_commit "$src" "$version")"
+            else
+              target="$(git rev-parse "origin/archive/v${version}")"
+            fi
+
+            git tag -a "$tag" "$target" -m "Well Importer ${version}"
+            git push origin "refs/tags/${tag}"
+          }
+
+          publish_release_if_needed() {
+            local version="$1"
+            local src="$2"
+            local tag="v${version}"
+            local asset="${ASSET_ROOT}/WellImporter-v${version}.zip"
+            local notes="${RUNNER_TEMP}/notes-${version}.md"
+            local summary
+            summary="$(release_summary "$version")"
+
+            rm -f "$asset"
+            (cd "$src" && zip -qr "$asset" WellImporter)
+            unzip -t "$asset" >/dev/null
+
+            cat > "$notes" <<EOF
+          # Well Importer ${version}
+
+          ${summary}
+
+          Это исторический snapshot соответствующей версии Well Importer.
+
+          Для установки в QGIS скачайте \`WellImporter-v${version}.zip\` из Assets.
+          EOF
+
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              local assets
+              assets="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" --jq '.assets | length')"
+              if [ "$assets" -lt 1 ]; then
+                echo "Release ${tag} exists without an asset; immutable release cannot be repaired automatically." >&2
+                exit 1
+              fi
+              echo "Release ${tag} already exists with ${assets} asset(s)"
+            else
+              gh release create "$tag" "$asset" \
+                --repo "$GITHUB_REPOSITORY" \
+                --verify-tag \
+                --title "Well Importer ${version}" \
+                --notes-file "$notes" \
+                --latest=false
+            fi
+          }
+
+          for version in "${ALL_VERSIONS[@]}"; do
+            echo "=== v${version} ==="
+            src="$(prepare_source "$version")"
+            create_tag_if_needed "$version" "$src"
+            publish_release_if_needed "$version" "$src"
+          done
+
+          echo "=== Final verification ==="
+          release_count="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --jq 'length')"
+          tag_count="$(gh api "repos/${GITHUB_REPOSITORY}/tags?per_page=100" --jq 'length')"
+          echo "Releases: ${release_count}"
+          echo "Tags: ${tag_count}"
+          test "$release_count" -eq 31
+          test "$tag_count" -eq 31
+
+          for version in "${ALL_VERSIONS[@]}" 2.2.3; do
+            assets="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/v${version}" --jq '.assets | length')"
+            test "$assets" -ge 1
+          done
