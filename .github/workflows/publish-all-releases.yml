@@ -28,12 +28,17 @@ jobs:
 
           HISTORY_COMMIT="8c58f48c6cd1f1276f3150f21a1d4bc56b25bb76"
           HISTORY_FILE="archive/WellImporter_source_history_1.0.0_to_2.0.5.tar.xz"
+          HISTORY_SHA256="350d3d927882f01d2f94ec9c191d8978c0609524582cf9e3344c158ee065155d"
           HISTORY_ROOT="${RUNNER_TEMP}/history"
           ASSET_ROOT="${RUNNER_TEMP}/assets"
           SOURCE_ROOT="${RUNNER_TEMP}/sources"
           mkdir -p "$HISTORY_ROOT" "$ASSET_ROOT" "$SOURCE_ROOT"
 
-          git show "${HISTORY_COMMIT}:${HISTORY_FILE}" > "${RUNNER_TEMP}/history.tar.xz"
+          gh api --method GET "repos/${GITHUB_REPOSITORY}/contents/${HISTORY_FILE}" \
+            -f ref="${HISTORY_COMMIT}" --jq '.content' \
+            | tr -d '\n' | base64 --decode > "${RUNNER_TEMP}/history.tar.xz"
+          echo "${HISTORY_SHA256}  ${RUNNER_TEMP}/history.tar.xz" | sha256sum -c -
+          xz -t "${RUNNER_TEMP}/history.tar.xz"
           tar -xJf "${RUNNER_TEMP}/history.tar.xz" -C "$HISTORY_ROOT"
           EARLY_ROOT="${HISTORY_ROOT}/WellImporter_history_1.0.0_to_2.0.5"
 
