@@ -1,0 +1,26 @@
+name: Verify historical release archive raw download
+
+on:
+  push:
+    branches:
+      - chore/publish-releases-2.2.3-v3
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download and verify historical archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://raw.githubusercontent.com/username-alexandr/WellImporter-QGIS/8c58f48c6cd1f1276f3150f21a1d4bc56b25bb76/archive/WellImporter_source_history_1.0.0_to_2.0.5.tar.xz"
+          FILE="${RUNNER_TEMP}/history.tar.xz"
+          curl --fail --location --retry 3 --output "$FILE" "$URL"
+          ls -l "$FILE"
+          sha256sum "$FILE"
+          echo "350d3d927882f01d2f94ec9c191d8978c0609524582cf9e3344c158ee065155d  $FILE" | sha256sum -c -
+          xz -t "$FILE"
+          tar -tJf "$FILE" | head -n 20
