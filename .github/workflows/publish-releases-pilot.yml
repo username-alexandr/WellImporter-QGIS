@@ -1,0 +1,87 @@
+name: Publish Well Importer release pilot
+
+on:
+  push:
+    branches:
+      - chore/publish-releases-2.2.3-v2
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build v2.2.3 release ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="2.2.3"
+          TAG="v${VERSION}"
+          WORK="${RUNNER_TEMP}/wellimporter-release-${VERSION}"
+          rm -rf "$WORK"
+          mkdir -p "$WORK"
+
+          git fetch origin "archive/v${VERSION}:refs/remotes/origin/archive/v${VERSION}"
+          git archive "origin/archive/v${VERSION}" WellImporter | tar -x -C "$WORK"
+
+          grep -q '^version=2\.2\.3$' "$WORK/WellImporter/metadata.txt"
+          test -f "$WORK/WellImporter/__init__.py"
+
+          (cd "$WORK" && zip -qr "WellImporter-v${VERSION}.zip" WellImporter)
+          unzip -t "$WORK/WellImporter-v${VERSION}.zip"
+          echo "RELEASE_ZIP=$WORK/WellImporter-v${VERSION}.zip" >> "$GITHUB_ENV"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Create tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "username-alexandr"
+          git config user.email "56488397+username-alexandr@users.noreply.github.com"
+          TARGET="$(git rev-parse origin/archive/v2.2.3)"
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists"
+          else
+            git tag -a "$TAG" "$TARGET" -m "Well Importer 2.2.3"
+            git push origin "refs/tags/${TAG}"
+          fi
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "${RUNNER_TEMP}/release-notes.md" <<'EOF'
+          # Well Importer 2.2.3
+
+          Patch-релиз исправляет импорт CSV/TXT, включая файлы UTF-16 без BOM, которые ранее могли приводить к ошибке `line contains NUL`.
+
+          Основные исправления:
+          - устойчивое распознавание UTF-8, UTF-8 BOM, UTF-16 с BOM и без BOM;
+          - поддержка Windows-1251 и CP866;
+          - удаление технических NUL перед передачей данных в `csv.reader`;
+          - сохранены исправления 2.2.1 и 2.2.2 для поля «Номер скважины» и достройки площадных кругов.
+
+          Для установки в QGIS скачайте `WellImporter-v2.2.3.zip` из Assets.
+          EOF
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$RELEASE_ZIP" --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "Well Importer 2.2.3" --notes-file "${RUNNER_TEMP}/release-notes.md" --latest
+          else
+            gh release create "$TAG" "$RELEASE_ZIP" --repo "$GITHUB_REPOSITORY" --title "Well Importer 2.2.3" --notes-file "${RUNNER_TEMP}/release-notes.md" --latest
+          fi
+
+      - name: Verify release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq '.tag_name + " assets=" + ((.assets | length) | tostring)'
