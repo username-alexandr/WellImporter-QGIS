@@ -34,9 +34,13 @@ class WellImporterDialogV224(WellImporterDialog):
         name = self.ui.cmbProfile.currentText().strip()
         profile = self.profiles.get(name)
         super().apply_profile()
-        if profile and profile.get("parcel_group_path"):
-            self.settings.set_parcel_group_path(profile.get("parcel_group_path"))
-            self.controller.set_parcel_group_path(profile.get("parcel_group_path"))
+        # Старые профили 2.2.3 и ниже не содержат parcel_group_path — для них
+        # сохраняем текущий выбор. Профиль 2.2.4 с явным пустым значением,
+        # напротив, должен очистить ранее выбранную группу.
+        if profile and "parcel_group_path" in profile:
+            group_path = str(profile.get("parcel_group_path") or "").strip()
+            self.settings.set_parcel_group_path(group_path)
+            self.controller.set_parcel_group_path(group_path)
 
     def export_for_field(self):
         """Запускает мастер выезда с объединённым временным слоем участков выбранной группы."""
