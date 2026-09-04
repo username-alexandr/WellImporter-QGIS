@@ -3,6 +3,7 @@
 from qgis.PyQt import QtWidgets
 
 from .control_center import ControlCenterDialog
+from .parcel_group_logic import choose_group_index
 
 
 class ControlCenterDialogV224(ControlCenterDialog):
@@ -91,11 +92,12 @@ class ControlCenterDialogV224(ControlCenterDialog):
         for path in groups:
             self.cmbParcelGroup.addItem(path, path)
 
-        target_index = self.cmbParcelGroup.findData(previous) if previous else -1
-        if target_index < 0 and self.cmbParcelGroup.count() == 1:
-            target_index = 0
+        # QComboBox автоматически делает первую добавленную строку текущей.
+        # Для нескольких групп это выглядело как выбор пользователя, хотя он
+        # ничего не выбирал. Явно возвращаем -1, пока нет сохранённого выбора.
+        target_index = choose_group_index(groups, previous)
+        self.cmbParcelGroup.setCurrentIndex(target_index)
         if target_index >= 0:
-            self.cmbParcelGroup.setCurrentIndex(target_index)
             self.settings.set_parcel_group_path(self._selected_group_path())
         self.cmbParcelGroup.blockSignals(False)
         self._refresh_group_summary()
