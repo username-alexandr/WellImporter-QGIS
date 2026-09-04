@@ -5,7 +5,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from WellImporter.parcel_group_logic import resolve_unique_match, purpose_or_layer
+from WellImporter.parcel_group_logic import (
+    choose_group_index,
+    purpose_or_layer,
+    resolve_unique_match,
+)
 
 
 def check(condition, label):
@@ -30,4 +34,25 @@ check(
 check(
     purpose_or_layer("", "Участки земельного фонда") == "Участки земельного фонда",
     "layer name is purpose fallback",
+)
+
+check(
+    choose_group_index([], "") == -1,
+    "empty group list has no selection",
+)
+check(
+    choose_group_index(["Земельные участки"], "") == 0,
+    "single group may be selected automatically",
+)
+check(
+    choose_group_index(["Гос участки", "Земельный фонд"], "") == -1,
+    "multiple groups require explicit user selection",
+)
+check(
+    choose_group_index(["Гос участки", "Земельный фонд"], "Земельный фонд") == 1,
+    "saved group is restored by exact path",
+)
+check(
+    choose_group_index(["Гос участки", "Земельный фонд"], "Старая группа") == -1,
+    "stale saved group is not silently replaced",
 )
